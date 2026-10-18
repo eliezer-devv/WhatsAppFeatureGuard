@@ -179,11 +179,9 @@ class WhatsAppAccessibilityService : AccessibilityService() {
 
         val channelsStart = channelsHeading ?: followChannel
 
-        // Do not require the Status row itself to be visible.
-        // It may move or be recycled while the Updates list scrolls.
+        // Recognize Updates even when the Channels heading is absent.
         val onUpdatesList =
             updatesList != null &&
-                channelsStart != null &&
                 !isStatusViewer(root) &&
                 !isChannelsDiscoveryScreen(root)
 
@@ -192,9 +190,10 @@ class WhatsAppAccessibilityService : AccessibilityService() {
             return
         }
 
-        val list = updatesList!!
-        val sectionBoundary = channelsStart!!
+        val list = updatesList ?: return
         val screenWidth = resources.displayMetrics.widthPixels
+        val screenHeight = resources.displayMetrics.heightPixels
+
         val left = list.left.coerceAtLeast(0)
         val right = list.right.coerceAtMost(screenWidth)
 
@@ -203,12 +202,18 @@ class WhatsAppAccessibilityService : AccessibilityService() {
             return
         }
 
-        // Cover the entire Status section from the top of the Updates
-        // list to the Channels heading, regardless of scroll position.
+        // When the Channels heading is missing, fall back to the
+        // visible Updates list boundary. This may temporarily cover
+        // channel content too, until the heading becomes available.
+        val sectionBottom = channelsStart?.top
+            ?.minus(dp(4))
+            ?: list.bottom.coerceAtMost(screenHeight)
+
         if (overlayStatus) {
             val top = list.top.coerceAtLeast(0)
-            val bottom = (sectionBoundary.top - dp(4))
+            val bottom = sectionBottom
                 .coerceAtMost(list.bottom)
+                .coerceAtMost(screenHeight)
 
             if (bottom > top) {
                 setOverlay(
@@ -223,14 +228,13 @@ class WhatsAppAccessibilityService : AccessibilityService() {
             removeOverlay("status")
         }
 
-        // Cover Channels independently, below its heading.
-        if (overlayChannels) {
-            val top = (sectionBoundary.top - dp(4))
+        // Keep the Channels overlay independent.
+        if (overlayChannels && channelsStart != null) {
+            val top = (channelsStart.top - dp(4))
                 .coerceAtLeast(list.top)
+                .coerceAtLeast(0)
 
-            val bottom = list.bottom.coerceAtMost(
-                resources.displayMetrics.heightPixels
-            )
+            val bottom = list.bottom.coerceAtMost(screenHeight)
 
             if (bottom > top) {
                 setOverlay(
@@ -448,8 +452,8 @@ class WhatsAppAccessibilityService : AccessibilityService() {
                 containsText(root, "Find channels") ||
                 containsText(root, "Discover channels")
 
-        // Preserve the existing channel-screen indicators.
-        // Additionally recognize the separate Explore/discovery screen.
+        // Preserve the original indicators and recognize the
+        // separate Explore/discovery screen.
         return existingChannelIndicators ||
             (!hasUpdatesList && isChannelsDiscoveryScreen(root))
     }
@@ -457,7 +461,13 @@ class WhatsAppAccessibilityService : AccessibilityService() {
     private fun isChannelsDiscoveryScreen(
         root: AccessibilityNodeInfo
     ): Boolean {
+        // The normal Updates list is not the Explore screen.
         if (containsViewId(root, "updates_list")) return false
+
+        // Recognize the channel directory without relying on text.
+        if (containsViewId(root, "directory_category_list")) {
+            return true
+        }
 
         val exploreHeading =
             containsText(root, "Explore channels") ||
