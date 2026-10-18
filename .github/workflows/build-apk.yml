@@ -1,10 +1,9 @@
-name: Build WhatsAppFeatureGuard APK
+
+name: Build WhatsApp Feature Guard APK
 
 on:
-  workflow_dispatch:
   push:
-    branches:
-      - main
+  workflow_dispatch:
 
 permissions:
   contents: read
@@ -14,26 +13,150 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Checkout repository
+      - name: Check out repository
         uses: actions/checkout@v4
 
-      - name: Set up Java
+      - name: Set up Java 17
         uses: actions/setup-java@v4
         with:
           distribution: temurin
-          java-version: "17"
+          java-version: '17'
 
       - name: Set up Gradle
         uses: gradle/actions/setup-gradle@v4
         with:
-          gradle-version: "8.9"
+          gradle-version: '8.9'
 
-      - name: Build debug APK
-        run: gradle assembleDebug
+      - name: Diagnose manifest and build
+        id: diagnose
+        shell: bash
+        run: |
+          set +e
 
-      - name: Upload APK
+          mkdir -p diagnostics
+
+          echo "=========================================="
+          echo "WHATSAPP FEATURE GUARD BUILD DIAGNOSTICS"
+          echo "=========================================="
+
+          MANIFEST="app/src/main/AndroidManifest.xml"
+
+          echo ""
+          echo "=== 1. MANIFEST FILE DETAILS ==="
+
+          if [ ! -f "$MANIFEST" ]; then
+            echo "ERROR: Manifest file does not exist: $MANIFEST"
+          else
+            echo "File exists."
+            wc -c -l "$MANIFEST"
+            echo ""
+            echo "=== Manifest with line numbers ==="
+            nl -ba "$MANIFEST"
+
+            cp "$MANIFEST" diagnostics/AndroidManifest.xml
+
+            echo ""
+            echo "=== 2. INDEPENDENT XML VALIDATION ==="
+
+            python3 - "$MANIFEST" <<'PY'
+          import sys
+          import xml.etree.ElementTree as ET
+
+          path = sys.argv[1]
+          print("Checking XML syntax:", path)
+
+          try:
+              ET.parse(path)
+              print("XML_RESULT: VALID")
+          except ET.ParseError as error:
+              print("XML_RESULT: INVALID")
+              print("XML_ERROR:", str(error))
+              if hasattr(error, "position"):
+                  line, column = error.position
+                  print(f"XML_LINE: {line}")
+                  print(f"XML_COLUMN: {column}")
+                  try:
+                      with open(path, encoding="utf-8-sig") as file:
+                          lines = file.readlines()
+                      start = max(0, line - 4)
+                      end = min(len(lines), line + 3)
+                      print("=== Surrounding lines ===")
+                      for index in range(start, end):
+                          print(f"{index + 1:4}: {lines[index].rstrip()}")
+                  except Exception as read_error:
+                      print("Could not display context:", read_error)
+              sys.exit(1)
+          except Exception as error:
+              print("XML_CHECK_ERROR:", repr(error))
+              sys.exit(2)
+          PY
+
+            XML_STATUS=$?
+            echo "XML validator exit code: $XML_STATUS"
+          fi
+
+          echo ""
+          echo "=== 3. CHECK RELATED RESOURCE FILES ==="
+
+          for FILE in \
+            app/src/main/res/xml/accessibility_service_config.xml \
+            app/src/main/res/values/strings.xml \
+            app/build.gradle.kts \
+            build.gradle.kts \
+            settings.gradle.kts
+          do
+            if [ -f "$FILE" ]; then
+              echo "FOUND: $FILE"
+            else
+              echo "MISSING: $FILE"
+            fi
+          done
+
+          echo ""
+          echo "=== 4. GRADLE BUILD WITH FULL DIAGNOSTICS ==="
+
+          gradle assembleDebug --stacktrace --info \
+            2>&1 | tee diagnostics/gradle-build.log
+
+          BUILD_STATUS=${PIPESTATUS[0]}
+
+          echo ""
+          echo "Gradle exit code: $BUILD_STATUS"
+
+          echo ""
+          echo "=== 5. EXTRACT ERROR DETAILS ==="
+
+          grep -n -i -E \
+            'error parsing|fatal error|SAXParseException|ParseError|lineNumber|columnNumber|what went wrong|caused by:|^e: |^w: |manifest merger|failed' \
+            diagnostics/gradle-build.log \
+            > diagnostics/error-summary.txt || true
+
+          if [ -s diagnostics/error-summary.txt ]; then
+            cat diagnostics/error-summary.txt
+          else
+            echo "No matching error lines found. See full Gradle log."
+          fi
+
+          echo ""
+          echo "=== END DIAGNOSTICS ==="
+
+          if [ "$BUILD_STATUS" -ne 0 ]; then
+            exit "$BUILD_STATUS"
+          fi
+
+      - name: Upload diagnostic logs
+        if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: WhatsAppFeatureGuard-debug
+          name: whatsapp-feature-guard-diagnostics
+          path: diagnostics/
+          if-no-files-found: warn
+          retention-days: 7
+
+      - name: Upload APK
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: WhatsAppFeatureGuard-debug-apk
           path: app/build/outputs/apk/debug/*.apk
           if-no-files-found: error
