@@ -46,8 +46,9 @@ class WhatsAppAccessibilityService : AccessibilityService() {
         private const val ROOT_RETRY_MS = 200L
         private const val MAX_ROOT_RETRIES = 5
 
-        // Allow WhatsApp time to return to Chats before going Home.
-        private const val CHATS_RETURN_DELAY_MS = 350L
+        // Back out of WhatsApp one screen at a time.
+        private const val BACK_PRESS_INTERVAL_MS = 300L
+        private const val MAX_BACK_PRESSES = 6
 
         @Volatile
         var lastCaptureStatus: String = "Waiting for WhatsApp"
@@ -65,6 +66,7 @@ class WhatsAppAccessibilityService : AccessibilityService() {
     private var serviceActive = false
 
     private var pendingLockoutReason: String? = null
+    private var backPressCount = 0
 
     private val rootRetryRunnable = Runnable {
         if (serviceActive && rootRetryCount < MAX_ROOT_RETRIES) {
@@ -73,11 +75,45 @@ class WhatsAppAccessibilityService : AccessibilityService() {
         }
     }
 
-    private val completeLockoutStartRunnable = Runnable {
-        if (serviceActive) {
-            val reason = pendingLockoutReason
+    private val backOutRunnable = Runnable {
+        if (!serviceActive) return@Runnable
+
+        val reason = pendingLockoutReason ?: return@Runnable
+
+        // Check the current foreground window.
+        val root = rootInActiveWindow
+        val foregroundPackage = try {
+            root?.packageName?.toString()
+        } catch (_: Exception) {
+            null
+        } finally {
+            root?.recycle()
+        }
+
+        // If another app is in the foreground, WhatsApp has
+        // been left. Start the lockout.
+        if (foregroundPackage != null &&
+            foregroundPackage != "com.whatsapp"
+        ) {
             pendingLockoutReason = null
-            beginLockoutCountdown(reason ?: "Restricted feature")
+            beginLockoutCountdown(reason)
+            return@Runnable
+        }
+
+        // If the root is temporarily unavailable, do not assume
+        // WhatsApp has closed. Retry while within the limit.
+        if (backPressCount < MAX_BACK_PRESSES) {
+            performGlobalAction(GLOBAL_ACTION_BACK)
+            backPressCount++
+
+            handler.postDelayed(
+                backOutRunnable,
+                BACK_PRESS_INTERVAL_MS
+            )
+        } else {
+            // Safety fallback: stop pressing Back and go Home.
+            pendingLockoutReason = null
+            beginLockoutCountdown(reason)
         }
     }
 
@@ -139,7 +175,7 @@ class WhatsAppAccessibilityService : AccessibilityService() {
         val overlayChannels = prefs.getBoolean(OVERLAY_CHANNELS, false)
         val diagnosticMode = prefs.getBoolean(DIAGNOSTIC_MODE, false)
 
-        // If the lockout has started, prevent WhatsApp from reopening.
+        // If lockout is active, prevent WhatsApp from reopening.
         val now = System.currentTimeMillis()
         val cooldownUntil = prefs.getLong(COOLDOWN_UNTIL, 0L)
 
@@ -152,8 +188,8 @@ class WhatsAppAccessibilityService : AccessibilityService() {
             finishLockout()
         }
 
-        // While we're waiting for the Chats-first transition, don't
-        // process the restricted screen again or restart the sequence.
+        // Don't process the restricted screen again while the
+        // Back sequence is running.
         if (pendingLockoutReason != null) {
             removeAllOverlays()
             return
@@ -206,7 +242,7 @@ class WhatsAppAccessibilityService : AccessibilityService() {
                     "Channels"
                 }
 
-                startLockout(reason, root)
+                startLockout(reason)
                 return
             }
         } catch (e: Exception) {
@@ -218,18 +254,15 @@ class WhatsAppAccessibilityService : AccessibilityService() {
     }
 
     // ---------------------------------------------------------------
-    // CHATS-FIRST RETURN, THEN TEN-SECOND LOCKOUT
+    // REPEATED BACK PRESSES, THEN TEN-SECOND LOCKOUT
     // ---------------------------------------------------------------
 
-    private fun startLockout(
-        reason: String,
-        root: AccessibilityNodeInfo
-    ) {
+    private fun startLockout(reason: String) {
         val prefs = getSharedPreferences(PREFS_NAME, MODE_PRIVATE)
         val existingUntil = prefs.getLong(COOLDOWN_UNTIL, 0L)
         val now = System.currentTimeMillis()
 
-        // If a lockout is already running, keep its original end time.
+        // Keep an existing lockout's original end time.
         if (existingUntil > now) {
             removeAllOverlays()
             updateLockoutNotification(existingUntil)
@@ -237,46 +270,33 @@ class WhatsAppAccessibilityService : AccessibilityService() {
             return
         }
 
-        // Prevent repeated events from scheduling multiple transitions.
+        // Prevent duplicate accessibility events from starting
+        // multiple Back sequences.
         if (pendingLockoutReason != null) return
 
         pendingLockoutReason = reason
+        backPressCount = 0
         removeAllOverlays()
 
-        val returnedToChats = tryReturnToChats(root)
+        lastCaptureStatus =
+            "$reason opened; backing out of WhatsApp"
 
-        lastCaptureStatus = if (returnedToChats) {
-            "$reason opened; attempted return to Chats"
-        } else {
-            "$reason opened; attempting Back to Chats"
-        }
-
-        // Allow the UI to react to the Chats click or Back action first.
-        handler.removeCallbacks(completeLockoutStartRunnable)
-        handler.postDelayed(
-            completeLockoutStartRunnable,
-            CHATS_RETURN_DELAY_MS
-        )
-    }
-
-    private fun tryReturnToChats(
-        root: AccessibilityNodeInfo
-    ): Boolean {
-        // If we're already on Chats, there's no need to click it.
-        if (isChatsScreen(root)) return true
-
-        // Prefer tapping the Chats tab if it's present.
-        if (clickLabel(root, "Chats")) return true
-
-        // Otherwise try Back to leave the restricted screen.
-        // This is a best-effort fallback; it may not always land on Chats.
+        // Press Back immediately, then check again after a delay.
         performGlobalAction(GLOBAL_ACTION_BACK)
-        return false
+        backPressCount++
+
+        handler.removeCallbacks(backOutRunnable)
+        handler.postDelayed(
+            backOutRunnable,
+            BACK_PRESS_INTERVAL_MS
+        )
     }
 
     private fun beginLockoutCountdown(reason: String) {
         if (!serviceActive) return
 
+        handler.removeCallbacks(backOutRunnable)
+        pendingLockoutReason = null
         removeAllOverlays()
 
         val until = System.currentTimeMillis() + COOLDOWN_MS
@@ -291,7 +311,7 @@ class WhatsAppAccessibilityService : AccessibilityService() {
 
         updateLockoutNotification(until)
 
-        // After attempting the Chats transition, leave WhatsApp.
+        // Leave WhatsApp and begin the lockout.
         performGlobalAction(GLOBAL_ACTION_HOME)
     }
 
@@ -916,7 +936,7 @@ class WhatsAppAccessibilityService : AccessibilityService() {
     override fun onDestroy() {
         serviceActive = false
         handler.removeCallbacks(rootRetryRunnable)
-        handler.removeCallbacks(completeLockoutStartRunnable)
+        handler.removeCallbacks(backOutRunnable)
         handler.removeCallbacks(lockoutCountdownRunnable)
         removeAllOverlays()
         super.onDestroy()
