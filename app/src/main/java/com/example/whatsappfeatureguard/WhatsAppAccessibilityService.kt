@@ -1,6 +1,8 @@
+
 package com.example.whatsappfeatureguard
 
 import android.accessibilityservice.AccessibilityService
+import android.util.Log
 import android.view.accessibility.AccessibilityEvent
 import android.view.accessibility.AccessibilityNodeInfo
 import android.os.SystemClock
@@ -8,6 +10,7 @@ import android.os.SystemClock
 class WhatsAppAccessibilityService : AccessibilityService() {
 
     companion object {
+        private const val TAG = "WhatsAppFeatureGuard"
         private const val WHATSAPP_PACKAGE = "com.whatsapp"
         private const val BLOCK_DURATION_MS = 10_000L
 
@@ -17,6 +20,7 @@ class WhatsAppAccessibilityService : AccessibilityService() {
     }
 
     private var blockedUntil = 0L
+    private var lastBlockTime = 0L
 
     override fun onAccessibilityEvent(event: AccessibilityEvent?) {
         event ?: return
@@ -25,71 +29,88 @@ class WhatsAppAccessibilityService : AccessibilityService() {
             return
         }
 
+        val prefs = getSharedPreferences(PREFS_NAME, MODE_PRIVATE)
+        val blockUpdates = prefs.getBoolean(BLOCK_STATUS, true)
+        val blockChannels = prefs.getBoolean(BLOCK_CHANNELS, true)
+
         val now = SystemClock.elapsedRealtime()
 
-        // Keep WhatsApp from reopening immediately after a blocked attempt.
         if (now < blockedUntil) {
             performGlobalAction(GLOBAL_ACTION_HOME)
             return
         }
 
-        val preferences = getSharedPreferences(
-            PREFS_NAME,
-            MODE_PRIVATE
+        val root = rootInActiveWindow ?: event.source ?: return
+
+        val clicked = event.eventType ==
+            AccessibilityEvent.TYPE_VIEW_CLICKED
+
+        val matched = findBlockedFeature(
+            root = root,
+            blockUpdates = blockUpdates,
+            blockChannels = blockChannels,
+            clicked = clicked,
+            selectedAncestor = false
         )
 
-        val blockStatus = preferences.getBoolean(BLOCK_STATUS, true)
-        val blockChannels = preferences.getBoolean(BLOCK_CHANNELS, true)
-
-        val root = rootInActiveWindow ?: event.source
-
-        if (root == null) {
-            return
-        }
-
-        val blockedFeature = findBlockedFeature(
-            root,
-            blockStatus,
-            blockChannels
-        )
-
-        if (blockedFeature) {
+        if (matched) {
             blockedUntil = now + BLOCK_DURATION_MS
+            lastBlockTime = now
+
+            Log.i(TAG, "Blocked a configured WhatsApp section")
             performGlobalAction(GLOBAL_ACTION_HOME)
         }
     }
 
     private fun findBlockedFeature(
         root: AccessibilityNodeInfo,
-        blockStatus: Boolean,
-        blockChannels: Boolean
+        blockUpdates: Boolean,
+        blockChannels: Boolean,
+        clicked: Boolean,
+        selectedAncestor: Boolean
     ): Boolean {
-        val label = (
-            root.text?.toString()
-                ?: root.contentDescription?.toString()
-                ?: ""
-            ).trim().lowercase()
+        val text = root.text?.toString().orEmpty()
+        val description = root.contentDescription?.toString().orEmpty()
 
-        // Only act on nodes marked as selected.
-        val selected = root.isSelected
+        val label = normalize("$text $description")
 
-        if (selected) {
-            if (blockStatus && label == "status") {
-                return true
-            }
+        val isUpdates = label.contains("updates") ||
+            label.contains("status")
 
-            if (blockChannels && label == "channels") {
-                return true
-            }
+        val isChannels = label.contains("channels")
+
+        val selectedHere = root.isSelected || root.isChecked
+        val selected = selectedHere || selectedAncestor
+
+        // A click on the named section is an entry attempt.
+        // Otherwise, require the section or its parent to be selected.
+        val entryAttempt = clicked && root.isClickable
+
+        if (blockUpdates && isUpdates &&
+            (entryAttempt || selected)
+        ) {
+            Log.i(TAG, "Updates/Status entry detected")
+            return true
         }
+
+        if (blockChannels && isChannels &&
+            (entryAttempt || selected)
+        ) {
+            Log.i(TAG, "Channels entry detected")
+            return true
+        }
+
+        val childSelectedAncestor = selectedAncestor || selectedHere
 
         for (i in 0 until root.childCount) {
             val child = root.getChild(i) ?: continue
 
             if (findBlockedFeature(
                     child,
-                    blockStatus,
-                    blockChannels
+                    blockUpdates,
+                    blockChannels,
+                    clicked,
+                    childSelectedAncestor
                 )
             ) {
                 return true
@@ -99,7 +120,12 @@ class WhatsAppAccessibilityService : AccessibilityService() {
         return false
     }
 
+    private fun normalize(value: String): String {
+        return value.trim().lowercase()
+            .replace(Regex("\\s+"), " ")
+    }
+
     override fun onInterrupt() {
-        // Android interrupted the accessibility service.
+        Log.i(TAG, "Accessibility service interrupted")
     }
 }
