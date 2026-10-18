@@ -1,6 +1,7 @@
 <?xml version="1.0" encoding="utf-8"?>
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
 
+    <!-- Permission for the lockout countdown notification -->
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
 
     <application
@@ -9,6 +10,7 @@
         android:supportsRtl="true"
         android:theme="@android:style/Theme.Material.Light.NoActionBar">
 
+        <!-- Main app screen -->
         <activity
             android:name=".MainActivity"
             android:exported="true">
@@ -18,6 +20,7 @@
             </intent-filter>
         </activity>
 
+        <!-- Accessibility service for detecting Status and Channels -->
         <service
             android:name=".WhatsAppAccessibilityService"
             android:label="@string/accessibility_service_name"
@@ -32,6 +35,7 @@
                 android:resource="@xml/accessibility_service_config" />
         </service>
 
+        <!-- File provider used by the app -->
         <provider
             android:name="androidx.core.content.FileProvider"
             android:authorities="${applicationId}.fileprovider"
