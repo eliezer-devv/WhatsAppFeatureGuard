@@ -1,10 +1,14 @@
 package com.example.whatsappfeatureguard
 
 import android.accessibilityservice.AccessibilityService
+import android.app.Notification
+import android.app.NotificationChannel
+import android.app.NotificationManager
 import android.graphics.Color
 import android.graphics.PixelFormat
 import android.graphics.Rect
 import android.graphics.drawable.ColorDrawable
+import android.os.Build
 import android.os.Handler
 import android.os.Looper
 import android.view.Gravity
@@ -29,6 +33,10 @@ class WhatsAppAccessibilityService : AccessibilityService() {
         private const val OVERLAY_CHANNELS = "overlay_channels"
         private const val COOLDOWN_UNTIL = "cooldown_until"
         private const val LOG_FILE = "whatsapp_accessibility_log.txt"
+
+        private const val NOTIFICATION_CHANNEL_ID =
+            "whatsapp_feature_guard_lockout"
+        private const val NOTIFICATION_ID = 7401
 
         private const val MAX_LOG_BYTES = 2 * 1024 * 1024
         private const val MAX_NODES = 500
@@ -60,10 +68,33 @@ class WhatsAppAccessibilityService : AccessibilityService() {
         }
     }
 
+    private val lockoutCountdownRunnable = Runnable {
+        if (serviceActive) {
+            val prefs =
+                getSharedPreferences(PREFS_NAME, MODE_PRIVATE)
+            val until = prefs.getLong(COOLDOWN_UNTIL, 0L)
+
+            if (until > System.currentTimeMillis()) {
+                updateLockoutNotification(until)
+            } else {
+                finishLockout()
+            }
+        }
+    }
+
     override fun onServiceConnected() {
         super.onServiceConnected()
         serviceActive = true
         lastCaptureStatus = "Accessibility service connected"
+
+        val prefs = getSharedPreferences(PREFS_NAME, MODE_PRIVATE)
+        val until = prefs.getLong(COOLDOWN_UNTIL, 0L)
+
+        if (until > System.currentTimeMillis()) {
+            updateLockoutNotification(until)
+        } else if (until != 0L) {
+            finishLockout()
+        }
     }
 
     override fun onAccessibilityEvent(event: AccessibilityEvent?) {
@@ -94,6 +125,20 @@ class WhatsAppAccessibilityService : AccessibilityService() {
         val overlayStatus = prefs.getBoolean(OVERLAY_STATUS, false)
         val overlayChannels = prefs.getBoolean(OVERLAY_CHANNELS, false)
         val diagnosticMode = prefs.getBoolean(DIAGNOSTIC_MODE, false)
+
+        // Enforce an active lockout before any normal feature checks.
+        // This also blocks reopening WhatsApp to the Chats screen.
+        val now = System.currentTimeMillis()
+        val cooldownUntil = prefs.getLong(COOLDOWN_UNTIL, 0L)
+
+        if (now < cooldownUntil) {
+            removeAllOverlays()
+            updateLockoutNotification(cooldownUntil)
+            performGlobalAction(GLOBAL_ACTION_HOME)
+            return
+        } else if (cooldownUntil != 0L) {
+            finishLockout()
+        }
 
         if (!blockStatus && !blockChannels &&
             !overlayStatus && !overlayChannels && !diagnosticMode
@@ -129,30 +174,23 @@ class WhatsAppAccessibilityService : AccessibilityService() {
 
             updateOverlays(root, overlayStatus, overlayChannels)
 
-            // Existing cooldown and blocking flow.
-            val now = System.currentTimeMillis()
-            val cooldownUntil = prefs.getLong(COOLDOWN_UNTIL, 0L)
-
-            if (now < cooldownUntil && !isChatsScreen(root)) {
-                redirectToChats()
-                return
-            }
-
-            if (!blockStatus && !blockChannels) return
-
+            // Only start the lockout when the restricted screen itself
+            // is detected, rather than merely when its tab is tapped.
             val statusViewer =
                 blockStatus && isStatusViewer(root)
-
-            val statusRowClicked =
-                blockStatus &&
-                    event?.let { isStatusRowClick(it) } == true
 
             val channelsScreen =
                 blockChannels && isChannelsScreen(root)
 
-            if (statusViewer || statusRowClicked || channelsScreen) {
-                startCooldown()
-                redirectToChats()
+            if (statusViewer || channelsScreen) {
+                val reason = if (statusViewer) {
+                    "Status"
+                } else {
+                    "Channels"
+                }
+
+                startLockout(reason)
+                return
             }
         } catch (e: Exception) {
             lastCaptureStatus =
@@ -160,6 +198,142 @@ class WhatsAppAccessibilityService : AccessibilityService() {
         } finally {
             root.recycle()
         }
+    }
+
+    // ---------------------------------------------------------------
+    // TEN-SECOND LOCKOUT AND COUNTDOWN NOTIFICATION
+    // ---------------------------------------------------------------
+
+    private fun startLockout(reason: String) {
+        val prefs = getSharedPreferences(PREFS_NAME, MODE_PRIVATE)
+        val existingUntil = prefs.getLong(COOLDOWN_UNTIL, 0L)
+        val now = System.currentTimeMillis()
+
+        // Do not restart the countdown repeatedly while a restricted
+        // screen is still visible.
+        if (existingUntil > now) {
+            removeAllOverlays()
+            updateLockoutNotification(existingUntil)
+            performGlobalAction(GLOBAL_ACTION_HOME)
+            return
+        }
+
+        val until = now + COOLDOWN_MS
+
+        prefs.edit()
+            .putLong(COOLDOWN_UNTIL, until)
+            .apply()
+
+        lastCaptureStatus =
+            "$reason opened; WhatsApp locked for 10 seconds"
+
+        removeAllOverlays()
+        updateLockoutNotification(until)
+
+        // Leave WhatsApp immediately. Android does not let an ordinary
+        // app force-stop another app, so this uses the Home action.
+        performGlobalAction(GLOBAL_ACTION_HOME)
+    }
+
+    private fun createLockoutNotificationChannel() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            val manager =
+                getSystemService(NOTIFICATION_SERVICE)
+                    as NotificationManager
+
+            val channel = NotificationChannel(
+                NOTIFICATION_CHANNEL_ID,
+                "WhatsApp lockout countdown",
+                NotificationManager.IMPORTANCE_LOW
+            ).apply {
+                description =
+                    "Shows the remaining time in a temporary WhatsApp lockout"
+                setShowBadge(false)
+            }
+
+            manager.createNotificationChannel(channel)
+        }
+    }
+
+    private fun updateLockoutNotification(until: Long) {
+        handler.removeCallbacks(lockoutCountdownRunnable)
+
+        val remainingMs = until - System.currentTimeMillis()
+
+        if (remainingMs <= 0L) {
+            finishLockout()
+            return
+        }
+
+        val secondsRemaining =
+            ((remainingMs + 999L) / 1000L).toInt()
+
+        try {
+            createLockoutNotificationChannel()
+
+            val manager =
+                getSystemService(NOTIFICATION_SERVICE)
+                    as NotificationManager
+
+            val notification = if (
+                Build.VERSION.SDK_INT >= Build.VERSION_CODES.O
+            ) {
+                Notification.Builder(this, NOTIFICATION_CHANNEL_ID)
+            } else {
+                @Suppress("DEPRECATION")
+                Notification.Builder(this)
+                    .setPriority(Notification.PRIORITY_LOW)
+            }
+                .setSmallIcon(android.R.drawable.ic_lock_lock)
+                .setContentTitle("WhatsApp temporarily locked")
+                .setContentText(
+                    "WhatsApp will unlock in $secondsRemaining " +
+                        if (secondsRemaining == 1) "second" else "seconds"
+                )
+                .setSubText("Restricted feature opened")
+                .setOngoing(true)
+                .setOnlyAlertOnce(true)
+                .setCategory(Notification.CATEGORY_STATUS)
+                .setProgress(10, (10 - secondsRemaining).coerceIn(0, 10), false)
+                .build()
+
+            manager.notify(NOTIFICATION_ID, notification)
+
+            lastCaptureStatus =
+                "Lockout active: $secondsRemaining seconds remaining"
+        } catch (e: SecurityException) {
+            lastCaptureStatus =
+                "Lockout active, but notification permission is missing"
+        } catch (e: Exception) {
+            lastCaptureStatus =
+                "Notification error: ${e.javaClass.simpleName}"
+        }
+
+        // Refresh the displayed countdown every second.
+        handler.postDelayed(
+            lockoutCountdownRunnable,
+            minOf(1000L, remainingMs)
+        )
+    }
+
+    private fun finishLockout() {
+        handler.removeCallbacks(lockoutCountdownRunnable)
+
+        getSharedPreferences(PREFS_NAME, MODE_PRIVATE)
+            .edit()
+            .putLong(COOLDOWN_UNTIL, 0L)
+            .apply()
+
+        try {
+            val manager =
+                getSystemService(NOTIFICATION_SERVICE)
+                    as NotificationManager
+            manager.cancel(NOTIFICATION_ID)
+        } catch (_: Exception) {
+            // Lockout expiration should not depend on notification cleanup.
+        }
+
+        lastCaptureStatus = "10-second lockout finished"
     }
 
     // ---------------------------------------------------------------
@@ -179,7 +353,6 @@ class WhatsAppAccessibilityService : AccessibilityService() {
 
         val channelsStart = channelsHeading ?: followChannel
 
-        // Detect Updates even if the Channels heading is not exposed.
         val onUpdatesList =
             updatesList != null &&
                 !isStatusViewer(root) &&
@@ -202,9 +375,6 @@ class WhatsAppAccessibilityService : AccessibilityService() {
             return
         }
 
-        // Fallback: cover the visible Updates list when the Channels
-        // heading cannot be found. This may temporarily cover channel
-        // content until the heading becomes available.
         val sectionBottom = channelsStart?.top
             ?.minus(dp(4))
             ?: list.bottom.coerceAtMost(screenHeight)
@@ -228,7 +398,6 @@ class WhatsAppAccessibilityService : AccessibilityService() {
             removeOverlay("status")
         }
 
-        // Keep Channels as a separate overlay.
         if (overlayChannels && channelsStart != null) {
             val top = (channelsStart.top - dp(4))
                 .coerceAtLeast(list.top)
@@ -275,7 +444,6 @@ class WhatsAppAccessibilityService : AccessibilityService() {
             setPadding(dp(12), dp(8), dp(12), dp(8))
             background = ColorDrawable(Color.rgb(247, 247, 247))
 
-            // Consume touch events so they do not pass through to WhatsApp.
             isClickable = true
             isFocusable = false
             importantForAccessibility =
@@ -395,20 +563,8 @@ class WhatsAppAccessibilityService : AccessibilityService() {
         (value * resources.displayMetrics.density).toInt()
 
     // ---------------------------------------------------------------
-    // EXISTING BLOCKING LOGIC
+    // FEATURE DETECTION
     // ---------------------------------------------------------------
-
-    private fun startCooldown() {
-        val until = System.currentTimeMillis() + COOLDOWN_MS
-
-        getSharedPreferences(PREFS_NAME, MODE_PRIVATE)
-            .edit()
-            .putLong(COOLDOWN_UNTIL, until)
-            .apply()
-
-        lastCaptureStatus =
-            "Restricted feature detected; cooldown started"
-    }
 
     private fun isStatusRowClick(
         event: AccessibilityEvent
@@ -449,16 +605,17 @@ class WhatsAppAccessibilityService : AccessibilityService() {
     private fun isChannelsScreen(
         root: AccessibilityNodeInfo
     ): Boolean {
-        val hasUpdatesList = containsViewId(root, "updates_list")
+        // The Updates list itself can contain channel rows.
+        // Do not mistake that list for the opened Channels directory.
+        if (containsViewId(root, "updates_list")) return false
 
-        val existingChannelIndicators =
+        return isChannelsDiscoveryScreen(root) ||
+            containsViewId(root, "newsletter_directory_row_container") ||
+            containsViewId(root, "newsletter_name") ||
             containsText(root, "FOLLOW CHANNEL") ||
-                containsText(root, "Follow channel") ||
-                containsText(root, "Find channels") ||
-                containsText(root, "Discover channels")
-
-        return existingChannelIndicators ||
-            (!hasUpdatesList && isChannelsDiscoveryScreen(root))
+            containsText(root, "Follow channel") ||
+            containsText(root, "Find channels") ||
+            containsText(root, "Discover channels")
     }
 
     private fun isChannelsDiscoveryScreen(
@@ -552,6 +709,7 @@ class WhatsAppAccessibilityService : AccessibilityService() {
         return false
     }
 
+    // Retained for compatibility with the previous implementation.
     private fun redirectToChats() {
         val now = System.currentTimeMillis()
 
@@ -626,7 +784,7 @@ class WhatsAppAccessibilityService : AccessibilityService() {
     }
 
     // ---------------------------------------------------------------
-    // EXISTING DIAGNOSTIC LOGGING
+    // DIAGNOSTIC LOGGING
     // ---------------------------------------------------------------
 
     private fun captureScreen(
@@ -753,6 +911,7 @@ class WhatsAppAccessibilityService : AccessibilityService() {
     override fun onDestroy() {
         serviceActive = false
         handler.removeCallbacks(rootRetryRunnable)
+        handler.removeCallbacks(lockoutCountdownRunnable)
         removeAllOverlays()
         super.onDestroy()
     }
