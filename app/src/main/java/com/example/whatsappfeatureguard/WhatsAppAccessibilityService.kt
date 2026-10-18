@@ -127,10 +127,9 @@ class WhatsAppAccessibilityService : AccessibilityService() {
                 captureScreen(event, root)
             }
 
-            // Overlay settings are independent of the existing blocker.
             updateOverlays(root, overlayStatus, overlayChannels)
 
-            // Existing cooldown and blocking logic.
+            // Existing cooldown and blocking flow.
             val now = System.currentTimeMillis()
             val cooldownUntil = prefs.getLong(COOLDOWN_UNTIL, 0L)
 
@@ -164,7 +163,7 @@ class WhatsAppAccessibilityService : AccessibilityService() {
     }
 
     // ---------------------------------------------------------------
-    // OVERLAYS: only on the Updates list
+    // OVERLAYS
     // ---------------------------------------------------------------
 
     private fun updateOverlays(
@@ -172,24 +171,21 @@ class WhatsAppAccessibilityService : AccessibilityService() {
         overlayStatus: Boolean,
         overlayChannels: Boolean
     ) {
-        // Use actual IDs from the previously captured WhatsApp UI tree.
         val updatesList = findViewIdBounds(root, "updates_list")
-        val statusRow = findViewIdBounds(root, "status_row_container")
-        val myStatusRow =
-            findViewIdBounds(root, "my_status_row_container")
-
-        // The Channels heading is preferred. If it is unavailable,
-        // use the first visible channel item as the section boundary.
         val channelsHeading = findLabelBounds(root, "Channels")
-        val firstFollowChannel = findLabelBounds(root, "FOLLOW CHANNEL")
-            ?: findLabelBounds(root, "Follow channel")
+        val followChannel =
+            findLabelBounds(root, "FOLLOW CHANNEL")
+                ?: findLabelBounds(root, "Follow channel")
 
-        val channelsStart = channelsHeading ?: firstFollowChannel
+        val channelsStart = channelsHeading ?: followChannel
 
+        // Do not require the Status row itself to be visible.
+        // It may move or be recycled while the Updates list scrolls.
         val onUpdatesList =
             updatesList != null &&
-                (statusRow != null || myStatusRow != null) &&
-                !isStatusViewer(root)
+                channelsStart != null &&
+                !isStatusViewer(root) &&
+                !isChannelsDiscoveryScreen(root)
 
         if (!onUpdatesList) {
             removeAllOverlays()
@@ -197,6 +193,7 @@ class WhatsAppAccessibilityService : AccessibilityService() {
         }
 
         val list = updatesList!!
+        val sectionBoundary = channelsStart!!
         val screenWidth = resources.displayMetrics.widthPixels
         val left = list.left.coerceAtLeast(0)
         val right = list.right.coerceAtMost(screenWidth)
@@ -206,21 +203,14 @@ class WhatsAppAccessibilityService : AccessibilityService() {
             return
         }
 
-        // Status section: from the first Status row to the Channels
-        // heading (or first channel item if the heading isn't exposed).
+        // Cover the entire Status section from the top of the Updates
+        // list to the Channels heading, regardless of scroll position.
         if (overlayStatus) {
-            val firstStatusTop = listOfNotNull(statusRow, myStatusRow)
-                .filter { it.top >= list.top && it.bottom <= list.bottom }
-                .minOfOrNull { it.top }
+            val top = list.top.coerceAtLeast(0)
+            val bottom = (sectionBoundary.top - dp(4))
+                .coerceAtMost(list.bottom)
 
-            val top = ((firstStatusTop ?: list.top) - dp(36))
-                .coerceAtLeast(list.top)
-
-            val bottom = channelsStart?.top
-                ?.minus(dp(6))
-                ?.coerceAtMost(list.bottom)
-
-            if (bottom != null && bottom > top) {
+            if (bottom > top) {
                 setOverlay(
                     "status",
                     "Status hidden",
@@ -233,10 +223,9 @@ class WhatsAppAccessibilityService : AccessibilityService() {
             removeOverlay("status")
         }
 
-        // Channels section: from its heading to the bottom of the
-        // Updates list, stopping above WhatsApp's bottom navigation.
-        if (overlayChannels && channelsStart != null) {
-            val top = (channelsStart.top - dp(6))
+        // Cover Channels independently, below its heading.
+        if (overlayChannels) {
+            val top = (sectionBoundary.top - dp(4))
                 .coerceAtLeast(list.top)
 
             val bottom = list.bottom.coerceAtMost(
@@ -327,7 +316,7 @@ class WhatsAppAccessibilityService : AccessibilityService() {
                     getSystemService(WINDOW_SERVICE) as WindowManager
                 windowManager.removeView(view)
             } catch (_: Exception) {
-                // Android may already have removed the window.
+                // Android may already have removed this view.
             }
         }
     }
@@ -451,10 +440,38 @@ class WhatsAppAccessibilityService : AccessibilityService() {
     private fun isChannelsScreen(
         root: AccessibilityNodeInfo
     ): Boolean {
-        return containsText(root, "FOLLOW CHANNEL") ||
-            containsText(root, "Follow channel") ||
-            containsText(root, "Find channels") ||
-            containsText(root, "Discover channels")
+        val hasUpdatesList = containsViewId(root, "updates_list")
+
+        val existingChannelIndicators =
+            containsText(root, "FOLLOW CHANNEL") ||
+                containsText(root, "Follow channel") ||
+                containsText(root, "Find channels") ||
+                containsText(root, "Discover channels")
+
+        // Preserve the existing channel-screen indicators.
+        // Additionally recognize the separate Explore/discovery screen.
+        return existingChannelIndicators ||
+            (!hasUpdatesList && isChannelsDiscoveryScreen(root))
+    }
+
+    private fun isChannelsDiscoveryScreen(
+        root: AccessibilityNodeInfo
+    ): Boolean {
+        if (containsViewId(root, "updates_list")) return false
+
+        val exploreHeading =
+            containsText(root, "Explore channels") ||
+                containsText(root, "Explore")
+
+        val discoveryContent =
+            containsText(root, "Recommended") ||
+                containsText(root, "Popular") ||
+                containsText(root, "Verified") ||
+                containsText(root, "Search channels") ||
+                containsText(root, "Find channels") ||
+                containsText(root, "Discover channels")
+
+        return exploreHeading && discoveryContent
     }
 
     private fun isChatsScreen(
