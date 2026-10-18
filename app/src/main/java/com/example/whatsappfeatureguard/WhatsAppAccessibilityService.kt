@@ -1,9 +1,9 @@
 package com.example.whatsappfeatureguard
 
 import android.accessibilityservice.AccessibilityService
+import android.graphics.Rect
 import android.view.accessibility.AccessibilityEvent
 import android.view.accessibility.AccessibilityNodeInfo
-import android.graphics.Rect
 import java.io.File
 import java.text.SimpleDateFormat
 import java.util.Date
@@ -23,6 +23,7 @@ class WhatsAppAccessibilityService : AccessibilityService() {
         private const val MAX_NODES = 500
         private const val MAX_DEPTH = 30
         private const val COOLDOWN_MS = 10_000L
+        private const val REDIRECT_THROTTLE_MS = 700L
 
         @Volatile
         var lastCaptureStatus: String = "Waiting for WhatsApp"
@@ -47,9 +48,7 @@ class WhatsAppAccessibilityService : AccessibilityService() {
         val blockChannels = prefs.getBoolean(BLOCK_CHANNELS, false)
         val diagnosticMode = prefs.getBoolean(DIAGNOSTIC_MODE, false)
 
-        val root = rootInActiveWindow
-
-        if (root == null) {
+        val root = rootInActiveWindow ?: run {
             if (diagnosticMode) {
                 lastCaptureStatus = "WhatsApp detected, but no accessible root"
             }
@@ -57,18 +56,32 @@ class WhatsAppAccessibilityService : AccessibilityService() {
         }
 
         try {
-            // Keep diagnostic capture available independently of blocking.
             if (diagnosticMode) {
                 captureScreen(event, root)
             }
 
+            val now = System.currentTimeMillis()
+            val cooldownUntil = prefs.getLong(COOLDOWN_UNTIL, 0L)
+
+            // During cooldown, attempt to keep WhatsApp on its Chats screen.
+            if (now < cooldownUntil && !isChatsScreen(root)) {
+                redirectToChats()
+                return
+            }
+
             if (!blockStatus && !blockChannels) return
 
-            val statusViewer = blockStatus && isStatusViewer(root)
-            val statusRowClicked = blockStatus && isStatusRowClick(event)
-            val channelsScreen = blockChannels && isChannelsScreen(root)
+            val statusViewer =
+                blockStatus && isStatusViewer(root)
+
+            val statusRowClicked =
+                blockStatus && isStatusRowClick(event)
+
+            val channelsScreen =
+                blockChannels && isChannelsScreen(root)
 
             if (statusViewer || statusRowClicked || channelsScreen) {
+                startCooldown()
                 redirectToChats()
             }
         } catch (e: Exception) {
@@ -77,6 +90,16 @@ class WhatsAppAccessibilityService : AccessibilityService() {
         } finally {
             root.recycle()
         }
+    }
+
+    private fun startCooldown() {
+        val until = System.currentTimeMillis() + COOLDOWN_MS
+        getSharedPreferences(PREFS_NAME, MODE_PRIVATE)
+            .edit()
+            .putLong(COOLDOWN_UNTIL, until)
+            .apply()
+
+        lastCaptureStatus = "Restricted feature detected; cooldown started"
     }
 
     private fun isStatusRowClick(event: AccessibilityEvent): Boolean {
@@ -88,8 +111,7 @@ class WhatsAppAccessibilityService : AccessibilityService() {
 
         return try {
             val id = source.viewIdResourceName.orEmpty()
-            val description = source.contentDescription
-                ?.toString().orEmpty()
+            val description = source.contentDescription?.toString().orEmpty()
             val text = source.text?.toString().orEmpty()
 
             id.contains("status_row_container", ignoreCase = true) ||
@@ -103,27 +125,28 @@ class WhatsAppAccessibilityService : AccessibilityService() {
     }
 
     private fun isStatusViewer(root: AccessibilityNodeInfo): Boolean {
-        val hasProgress = containsViewId(root, "playback_progress")
-        val hasStatusCounter = containsText(root, "Status 1 of") ||
+        return containsViewId(root, "playback_progress") ||
+            containsText(root, "Status 1 of") ||
             containsText(root, "Status 2 of") ||
             containsText(root, "Status 3 of") ||
             containsText(root, "Status 4 of")
-
-        // The viewer normally exposes its progress bar or status counter.
-        // Requiring a viewer-specific marker avoids blocking the entire
-        // Updates screen merely because status rows are visible.
-        return hasProgress || hasStatusCounter
     }
 
     private fun isChannelsScreen(root: AccessibilityNodeInfo): Boolean {
-        val hasFollowChannel = containsText(root, "FOLLOW CHANNEL") ||
-            containsText(root, "Follow channel")
-
-        val hasChannelDirectoryLabel =
+        return containsText(root, "FOLLOW CHANNEL") ||
+            containsText(root, "Follow channel") ||
             containsText(root, "Find channels") ||
             containsText(root, "Discover channels")
+    }
 
-        return hasFollowChannel || hasChannelDirectoryLabel
+    private fun isChatsScreen(root: AccessibilityNodeInfo): Boolean {
+        val hasSearchBar = containsViewId(root, "search_bar_inner_layout")
+        val hasSearchText = containsViewId(root, "search_text")
+        val hasConversationList =
+            containsViewId(root, "contact_row_container") ||
+                containsViewId(root, "conversations_coordinator_layout")
+
+        return hasSearchBar && (hasSearchText || hasConversationList)
     }
 
     private fun containsText(
@@ -185,20 +208,13 @@ class WhatsAppAccessibilityService : AccessibilityService() {
     private fun redirectToChats() {
         val now = System.currentTimeMillis()
 
-        // Prevent repeated redirection attempts from flooding the UI.
-        if (now - lastRedirectTime < 700) return
+        if (now - lastRedirectTime < REDIRECT_THROTTLE_MS) return
         lastRedirectTime = now
 
-        val prefs = getSharedPreferences(PREFS_NAME, MODE_PRIVATE)
-        val cooldownUntil = prefs.getLong(COOLDOWN_UNTIL, 0L)
-
-        if (now >= cooldownUntil) {
-            prefs.edit()
-                .putLong(COOLDOWN_UNTIL, now + COOLDOWN_MS)
-                .apply()
+        val root = rootInActiveWindow ?: run {
+            performGlobalAction(GLOBAL_ACTION_BACK)
+            return
         }
-
-        val root = rootInActiveWindow ?: return
 
         try {
             if (clickLabel(root, "Chats")) {
@@ -210,10 +226,10 @@ class WhatsAppAccessibilityService : AccessibilityService() {
             root.recycle()
         }
 
-        // Fallback if the Chats tab isn't exposed as a clickable label.
+        // Fallback: leave the restricted screen.
         performGlobalAction(GLOBAL_ACTION_BACK)
         lastCaptureStatus =
-            "Restricted feature detected; attempted to return to Chats"
+            "Restricted feature detected; attempted to leave screen"
     }
 
     private fun clickLabel(
@@ -236,9 +252,7 @@ class WhatsAppAccessibilityService : AccessibilityService() {
             if (parent != null) {
                 try {
                     if (parent.isClickable &&
-                        parent.performAction(
-                            AccessibilityNodeInfo.ACTION_CLICK
-                        )
+                        parent.performAction(AccessibilityNodeInfo.ACTION_CLICK)
                     ) {
                         return true
                     }
@@ -265,7 +279,6 @@ class WhatsAppAccessibilityService : AccessibilityService() {
         root: AccessibilityNodeInfo
     ) {
         val now = System.currentTimeMillis()
-
         if (now - lastCaptureTime < 400) return
 
         val output = StringBuilder()
@@ -286,7 +299,6 @@ class WhatsAppAccessibilityService : AccessibilityService() {
         appendNodeTree(root, output, 0, counter)
 
         val snapshot = output.toString()
-
         if (snapshot == lastSnapshot) return
 
         appendToLog(snapshot)
