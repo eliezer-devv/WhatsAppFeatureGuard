@@ -28,6 +28,10 @@ class WhatsAppAccessibilityService : AccessibilityService() {
         private const val REDIRECT_THROTTLE_MS = 250L
         private const val ROOT_RETRY_MS = 200L
         private const val MAX_ROOT_RETRIES = 5
+
+        @Volatile
+        var lastCaptureStatus: String = "Waiting for WhatsApp"
+            private set
     }
 
     private val handler = Handler(Looper.getMainLooper())
@@ -44,10 +48,6 @@ class WhatsAppAccessibilityService : AccessibilityService() {
             processCurrentWindow()
         }
     }
-
-    @Volatile
-    var lastCaptureStatus: String = "Waiting for WhatsApp"
-        private set
 
     override fun onServiceConnected() {
         super.onServiceConnected()
@@ -93,6 +93,11 @@ class WhatsAppAccessibilityService : AccessibilityService() {
         }
 
         try {
+            // A retry must not act on another app's accessibility window.
+            if (root.packageName?.toString() != "com.whatsapp") {
+                return
+            }
+
             if (diagnosticMode && event != null) {
                 captureScreen(event, root)
             }
@@ -100,7 +105,7 @@ class WhatsAppAccessibilityService : AccessibilityService() {
             val now = System.currentTimeMillis()
             val cooldownUntil = prefs.getLong(COOLDOWN_UNTIL, 0L)
 
-            // During cooldown, attempt to keep WhatsApp on Chats.
+            // During cooldown, attempt to keep WhatsApp on its Chats screen.
             if (now < cooldownUntil && !isChatsScreen(root)) {
                 redirectToChats()
                 return
@@ -266,6 +271,10 @@ class WhatsAppAccessibilityService : AccessibilityService() {
         }
 
         try {
+            if (root.packageName?.toString() != "com.whatsapp") {
+                return
+            }
+
             if (clickLabel(root, "Chats")) {
                 lastCaptureStatus =
                     "Restricted feature blocked; returned to Chats"
