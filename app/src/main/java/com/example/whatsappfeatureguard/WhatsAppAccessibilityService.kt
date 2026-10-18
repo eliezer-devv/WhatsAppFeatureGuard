@@ -42,11 +42,9 @@ class WhatsAppAccessibilityService : AccessibilityService() {
         private const val MAX_NODES = 500
         private const val MAX_DEPTH = 30
         private const val COOLDOWN_MS = 10_000L
-        private const val REDIRECT_THROTTLE_MS = 250L
         private const val ROOT_RETRY_MS = 200L
         private const val MAX_ROOT_RETRIES = 5
 
-        // Back out of WhatsApp one screen at a time.
         private const val BACK_PRESS_INTERVAL_MS = 300L
         private const val MAX_BACK_PRESSES = 6
 
@@ -61,7 +59,6 @@ class WhatsAppAccessibilityService : AccessibilityService() {
 
     private var lastSnapshot = ""
     private var lastCaptureTime = 0L
-    private var lastRedirectTime = 0L
     private var rootRetryCount = 0
     private var serviceActive = false
 
@@ -75,47 +72,8 @@ class WhatsAppAccessibilityService : AccessibilityService() {
         }
     }
 
-    private val backOutRunnable = Runnable {
-        if (!serviceActive) return@Runnable
-
-        val reason = pendingLockoutReason ?: return@Runnable
-
-        // Check the current foreground window.
-        val root = rootInActiveWindow
-        val foregroundPackage = try {
-            root?.packageName?.toString()
-        } catch (_: Exception) {
-            null
-        } finally {
-            root?.recycle()
-        }
-
-        // If another app is in the foreground, WhatsApp has
-        // been left. Start the lockout.
-        if (foregroundPackage != null &&
-            foregroundPackage != "com.whatsapp"
-        ) {
-            pendingLockoutReason = null
-            beginLockoutCountdown(reason)
-            return@Runnable
-        }
-
-        // If the root is temporarily unavailable, do not assume
-        // WhatsApp has closed. Retry while within the limit.
-        if (backPressCount < MAX_BACK_PRESSES) {
-            performGlobalAction(GLOBAL_ACTION_BACK)
-            backPressCount++
-
-            handler.postDelayed(
-                backOutRunnable,
-                BACK_PRESS_INTERVAL_MS
-            )
-        } else {
-            // Safety fallback: stop pressing Back and go Home.
-            pendingLockoutReason = null
-            beginLockoutCountdown(reason)
-        }
-    }
+    // Explicit type prevents Kotlin recursive type-inference errors.
+    private lateinit var backOutRunnable: Runnable
 
     private val lockoutCountdownRunnable = Runnable {
         if (serviceActive) {
@@ -127,6 +85,49 @@ class WhatsAppAccessibilityService : AccessibilityService() {
                 updateLockoutNotification(until)
             } else {
                 finishLockout()
+            }
+        }
+    }
+
+    override fun onCreate() {
+        super.onCreate()
+
+        backOutRunnable = Runnable {
+            if (!serviceActive) return@Runnable
+
+            val reason = pendingLockoutReason ?: return@Runnable
+
+            val root = rootInActiveWindow
+            val foregroundPackage = try {
+                root?.packageName?.toString()
+            } catch (_: Exception) {
+                null
+            } finally {
+                root?.recycle()
+            }
+
+            // If another app is foregrounded, begin the lockout.
+            if (foregroundPackage != null &&
+                foregroundPackage != "com.whatsapp"
+            ) {
+                pendingLockoutReason = null
+                beginLockoutCountdown(reason)
+                return@Runnable
+            }
+
+            // Continue pressing Back up to the configured limit.
+            if (backPressCount < MAX_BACK_PRESSES) {
+                performGlobalAction(GLOBAL_ACTION_BACK)
+                backPressCount++
+
+                handler.postDelayed(
+                    backOutRunnable,
+                    BACK_PRESS_INTERVAL_MS
+                )
+            } else {
+                // Safety fallback: leave WhatsApp and start lockout.
+                pendingLockoutReason = null
+                beginLockoutCountdown(reason)
             }
         }
     }
@@ -175,7 +176,6 @@ class WhatsAppAccessibilityService : AccessibilityService() {
         val overlayChannels = prefs.getBoolean(OVERLAY_CHANNELS, false)
         val diagnosticMode = prefs.getBoolean(DIAGNOSTIC_MODE, false)
 
-        // If lockout is active, prevent WhatsApp from reopening.
         val now = System.currentTimeMillis()
         val cooldownUntil = prefs.getLong(COOLDOWN_UNTIL, 0L)
 
@@ -188,8 +188,6 @@ class WhatsAppAccessibilityService : AccessibilityService() {
             finishLockout()
         }
 
-        // Don't process the restricted screen again while the
-        // Back sequence is running.
         if (pendingLockoutReason != null) {
             removeAllOverlays()
             return
@@ -229,19 +227,11 @@ class WhatsAppAccessibilityService : AccessibilityService() {
 
             updateOverlays(root, overlayStatus, overlayChannels)
 
-            val statusViewer =
-                blockStatus && isStatusViewer(root)
-
-            val channelsScreen =
-                blockChannels && isChannelsScreen(root)
+            val statusViewer = blockStatus && isStatusViewer(root)
+            val channelsScreen = blockChannels && isChannelsScreen(root)
 
             if (statusViewer || channelsScreen) {
-                val reason = if (statusViewer) {
-                    "Status"
-                } else {
-                    "Channels"
-                }
-
+                val reason = if (statusViewer) "Status" else "Channels"
                 startLockout(reason)
                 return
             }
@@ -254,34 +244,29 @@ class WhatsAppAccessibilityService : AccessibilityService() {
     }
 
     // ---------------------------------------------------------------
-    // REPEATED BACK PRESSES, THEN TEN-SECOND LOCKOUT
+    // REPEATED BACK PRESSES AND TEN-SECOND LOCKOUT
     // ---------------------------------------------------------------
 
     private fun startLockout(reason: String) {
         val prefs = getSharedPreferences(PREFS_NAME, MODE_PRIVATE)
         val existingUntil = prefs.getLong(COOLDOWN_UNTIL, 0L)
-        val now = System.currentTimeMillis()
 
-        // Keep an existing lockout's original end time.
-        if (existingUntil > now) {
+        if (existingUntil > System.currentTimeMillis()) {
             removeAllOverlays()
             updateLockoutNotification(existingUntil)
             performGlobalAction(GLOBAL_ACTION_HOME)
             return
         }
 
-        // Prevent duplicate accessibility events from starting
-        // multiple Back sequences.
         if (pendingLockoutReason != null) return
 
         pendingLockoutReason = reason
         backPressCount = 0
         removeAllOverlays()
 
-        lastCaptureStatus =
-            "$reason opened; backing out of WhatsApp"
+        lastCaptureStatus = "$reason opened; backing out of WhatsApp"
 
-        // Press Back immediately, then check again after a delay.
+        // First Back press.
         performGlobalAction(GLOBAL_ACTION_BACK)
         backPressCount++
 
@@ -310,8 +295,6 @@ class WhatsAppAccessibilityService : AccessibilityService() {
             "$reason opened; WhatsApp locked for 10 seconds"
 
         updateLockoutNotification(until)
-
-        // Leave WhatsApp and begin the lockout.
         performGlobalAction(GLOBAL_ACTION_HOME)
     }
 
@@ -387,7 +370,7 @@ class WhatsAppAccessibilityService : AccessibilityService() {
 
             lastCaptureStatus =
                 "Lockout active: $secondsRemaining seconds remaining"
-        } catch (e: SecurityException) {
+        } catch (_: SecurityException) {
             lastCaptureStatus =
                 "Lockout active, but notification permission is missing"
         } catch (e: Exception) {
@@ -415,7 +398,7 @@ class WhatsAppAccessibilityService : AccessibilityService() {
                     as NotificationManager
             manager.cancel(NOTIFICATION_ID)
         } catch (_: Exception) {
-            // Lockout expiration should not depend on notification cleanup.
+            // Ignore notification cleanup errors.
         }
 
         lastCaptureStatus = "10-second lockout finished"
@@ -471,11 +454,7 @@ class WhatsAppAccessibilityService : AccessibilityService() {
                 .coerceAtMost(screenHeight)
 
             if (bottom > top) {
-                setOverlay(
-                    "status",
-                    "Status hidden",
-                    Rect(left, top, right, bottom)
-                )
+                setOverlay("status", "Status hidden", Rect(left, top, right, bottom))
             } else {
                 removeOverlay("status")
             }
@@ -491,11 +470,7 @@ class WhatsAppAccessibilityService : AccessibilityService() {
             val bottom = list.bottom.coerceAtMost(screenHeight)
 
             if (bottom > top) {
-                setOverlay(
-                    "channels",
-                    "Channels hidden",
-                    Rect(left, top, right, bottom)
-                )
+                setOverlay("channels", "Channels hidden", Rect(left, top, right, bottom))
             } else {
                 removeOverlay("channels")
             }
@@ -578,7 +553,7 @@ class WhatsAppAccessibilityService : AccessibilityService() {
                     getSystemService(WINDOW_SERVICE) as WindowManager
                 windowManager.removeView(view)
             } catch (_: Exception) {
-                // Android may already have removed this view.
+                // Android may already have removed the view.
             }
         }
     }
@@ -700,23 +675,6 @@ class WhatsAppAccessibilityService : AccessibilityService() {
         return exploreHeading && discoveryContent
     }
 
-    private fun isChatsScreen(
-        root: AccessibilityNodeInfo
-    ): Boolean {
-        val hasSearchBar =
-            containsViewId(root, "search_bar_inner_layout")
-        val hasSearchText =
-            containsViewId(root, "search_text")
-        val hasConversationList =
-            containsViewId(root, "contact_row_container") ||
-                containsViewId(
-                    root,
-                    "conversations_coordinator_layout"
-                )
-
-        return hasSearchBar && (hasSearchText || hasConversationList)
-    }
-
     private fun containsText(
         node: AccessibilityNodeInfo,
         expected: String
@@ -759,47 +717,6 @@ class WhatsAppAccessibilityService : AccessibilityService() {
             val child = node.getChild(i) ?: continue
             try {
                 if (containsViewId(child, expected)) return true
-            } finally {
-                child.recycle()
-            }
-        }
-
-        return false
-    }
-
-    private fun clickLabel(
-        node: AccessibilityNodeInfo,
-        label: String
-    ): Boolean {
-        val text = node.text?.toString().orEmpty()
-        val description =
-            node.contentDescription?.toString().orEmpty()
-
-        if (text.equals(label, ignoreCase = true) ||
-            description.equals(label, ignoreCase = true)
-        ) {
-            if (node.isClickable &&
-                node.performAction(AccessibilityNodeInfo.ACTION_CLICK)
-            ) return true
-
-            val parent = node.parent
-            if (parent != null) {
-                try {
-                    if (parent.isClickable &&
-                        parent.performAction(
-                            AccessibilityNodeInfo.ACTION_CLICK
-                        )
-                    ) return true
-                } finally {
-                    parent.recycle()
-                }
-            }
-        }
-
-        for (i in 0 until node.childCount) {
-            val child = node.getChild(i) ?: continue
-            try {
-                if (clickLabel(child, label)) return true
             } finally {
                 child.recycle()
             }
