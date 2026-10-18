@@ -69,11 +69,7 @@ class WhatsAppAccessibilityService : AccessibilityService() {
     override fun onAccessibilityEvent(event: AccessibilityEvent?) {
         if (!serviceActive || event == null) return
 
-        val eventPackage = event.packageName?.toString()
-
-        // Remove overlays when another app becomes the active window.
-        // Existing blocking actions remain restricted to WhatsApp.
-        if (eventPackage != "com.whatsapp") {
+        if (event.packageName?.toString() != "com.whatsapp") {
             if (event.eventType ==
                 AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED
             ) {
@@ -99,10 +95,8 @@ class WhatsAppAccessibilityService : AccessibilityService() {
         val overlayChannels = prefs.getBoolean(OVERLAY_CHANNELS, false)
         val diagnosticMode = prefs.getBoolean(DIAGNOSTIC_MODE, false)
 
-        val anyOverlay = overlayStatus || overlayChannels
-
         if (!blockStatus && !blockChannels &&
-            !diagnosticMode && !anyOverlay
+            !overlayStatus && !overlayChannels && !diagnosticMode
         ) {
             removeAllOverlays()
             return
@@ -118,16 +112,12 @@ class WhatsAppAccessibilityService : AccessibilityService() {
 
             if (rootRetryCount < MAX_ROOT_RETRIES) {
                 handler.removeCallbacks(rootRetryRunnable)
-                handler.postDelayed(
-                    rootRetryRunnable,
-                    ROOT_RETRY_MS
-                )
+                handler.postDelayed(rootRetryRunnable, ROOT_RETRY_MS)
             }
             return
         }
 
         try {
-            // A retry must never act on another app's window.
             if (root.packageName?.toString() != "com.whatsapp") {
                 removeAllOverlays()
                 return
@@ -137,15 +127,10 @@ class WhatsAppAccessibilityService : AccessibilityService() {
                 captureScreen(event, root)
             }
 
-            // New feature: update overlays independently of blocking.
-            // This does not replace or disable the existing blocker.
-            updateOverlays(
-                root,
-                overlayStatus,
-                overlayChannels
-            )
+            // Overlay settings are independent of the existing blocker.
+            updateOverlays(root, overlayStatus, overlayChannels)
 
-            // Existing cooldown and blocking logic follows.
+            // Existing cooldown and blocking logic.
             val now = System.currentTimeMillis()
             val cooldownUntil = prefs.getLong(COOLDOWN_UNTIL, 0L)
 
@@ -178,70 +163,68 @@ class WhatsAppAccessibilityService : AccessibilityService() {
         }
     }
 
-    // -----------------------------------------------------------------
-    // NEW OVERLAY FEATURE
-    // -----------------------------------------------------------------
+    // ---------------------------------------------------------------
+    // OVERLAYS: only on the Updates list
+    // ---------------------------------------------------------------
 
     private fun updateOverlays(
         root: AccessibilityNodeInfo,
         overlayStatus: Boolean,
         overlayChannels: Boolean
     ) {
-        val updatesBounds = findLabelBounds(root, "Updates")
-        val statusBounds = findLabelBounds(root, "Status")
-        val channelsBounds = findLabelBounds(root, "Channels")
+        // Use actual IDs from the previously captured WhatsApp UI tree.
+        val updatesList = findViewIdBounds(root, "updates_list")
+        val statusRow = findViewIdBounds(root, "status_row_container")
+        val myStatusRow =
+            findViewIdBounds(root, "my_status_row_container")
 
-        // Require the Updates tab and both section headings.
-        // This helps avoid covering the actual Status or Channels screens.
-        val onUpdatesScreen =
-            updatesBounds != null &&
-                statusBounds != null &&
-                channelsBounds != null &&
+        // The Channels heading is preferred. If it is unavailable,
+        // use the first visible channel item as the section boundary.
+        val channelsHeading = findLabelBounds(root, "Channels")
+        val firstFollowChannel = findLabelBounds(root, "FOLLOW CHANNEL")
+            ?: findLabelBounds(root, "Follow channel")
+
+        val channelsStart = channelsHeading ?: firstFollowChannel
+
+        val onUpdatesList =
+            updatesList != null &&
+                (statusRow != null || myStatusRow != null) &&
                 !isStatusViewer(root)
 
-        if (!onUpdatesScreen) {
+        if (!onUpdatesList) {
             removeAllOverlays()
             return
         }
 
-        val rootBounds = Rect()
-        root.getBoundsInScreen(rootBounds)
-
+        val list = updatesList!!
         val screenWidth = resources.displayMetrics.widthPixels
-        val left = rootBounds.left.coerceAtLeast(0)
-        val right = if (rootBounds.width() > 0) {
-            rootBounds.right.coerceAtMost(screenWidth)
-        } else {
-            screenWidth
-        }
+        val left = list.left.coerceAtLeast(0)
+        val right = list.right.coerceAtMost(screenWidth)
 
         if (right <= left) {
             removeAllOverlays()
             return
         }
 
-        val contentBottom = (
-            updatesBounds!!.top - dp(20)
-        ).let { candidate ->
-            if (candidate > channelsBounds!!.top) {
-                candidate
-            } else {
-                rootBounds.bottom - dp(72)
-            }
-        }
-
+        // Status section: from the first Status row to the Channels
+        // heading (or first channel item if the heading isn't exposed).
         if (overlayStatus) {
-            val top = (statusBounds!!.top - dp(8))
-                .coerceAtLeast(rootBounds.top)
+            val firstStatusTop = listOfNotNull(statusRow, myStatusRow)
+                .filter { it.top >= list.top && it.bottom <= list.bottom }
+                .minOfOrNull { it.top }
 
-            val bottom = (channelsBounds!!.top - dp(6))
-                .coerceAtMost(contentBottom)
+            val top = ((firstStatusTop ?: list.top) - dp(36))
+                .coerceAtLeast(list.top)
 
-            if (bottom > top) {
+            val bottom = channelsStart?.top
+                ?.minus(dp(6))
+                ?.coerceAtMost(list.bottom)
+
+            if (bottom != null && bottom > top) {
                 setOverlay(
-                    key = "status",
-                    label = "Status hidden",
-                    bounds = Rect(left, top, right, bottom)
+                    "status",
+                    "Status hidden",
+                    Rect(left, top, right, bottom)
                 )
             } else {
                 removeOverlay("status")
@@ -250,18 +233,21 @@ class WhatsAppAccessibilityService : AccessibilityService() {
             removeOverlay("status")
         }
 
-        if (overlayChannels) {
-            val top = (channelsBounds!!.top - dp(6))
-                .coerceAtLeast(rootBounds.top)
+        // Channels section: from its heading to the bottom of the
+        // Updates list, stopping above WhatsApp's bottom navigation.
+        if (overlayChannels && channelsStart != null) {
+            val top = (channelsStart.top - dp(6))
+                .coerceAtLeast(list.top)
 
-            val bottom = contentBottom
-                .coerceAtMost(rootBounds.bottom)
+            val bottom = list.bottom.coerceAtMost(
+                resources.displayMetrics.heightPixels
+            )
 
             if (bottom > top) {
                 setOverlay(
-                    key = "channels",
-                    label = "Channels hidden",
-                    bounds = Rect(left, top, right, bottom)
+                    "channels",
+                    "Channels hidden",
+                    Rect(left, top, right, bottom)
                 )
             } else {
                 removeOverlay("channels")
@@ -281,25 +267,22 @@ class WhatsAppAccessibilityService : AccessibilityService() {
             return
         }
 
-        val previousBounds = overlayRects[key]
-        val existingView = overlayViews[key]
+        val oldBounds = overlayRects[key]
+        val existing = overlayViews[key]
 
-        if (existingView != null && previousBounds == bounds) {
-            return
-        }
+        if (existing != null && oldBounds == bounds) return
 
         val windowManager =
             getSystemService(WINDOW_SERVICE) as WindowManager
 
-        val view = existingView ?: TextView(this).apply {
+        val view = existing ?: TextView(this).apply {
             textSize = 15f
             setTextColor(Color.DKGRAY)
             gravity = Gravity.CENTER
             setPadding(dp(12), dp(8), dp(12), dp(8))
             background = ColorDrawable(Color.rgb(247, 247, 247))
-
-            // The overlay hides content visually but does not consume taps.
-            importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_NO
+            importantForAccessibility =
+                View.IMPORTANT_FOR_ACCESSIBILITY_NO
         }
 
         view.text = label
@@ -319,7 +302,7 @@ class WhatsAppAccessibilityService : AccessibilityService() {
         }
 
         try {
-            if (existingView == null) {
+            if (existing == null) {
                 windowManager.addView(view, params)
                 overlayViews[key] = view
             } else {
@@ -344,7 +327,7 @@ class WhatsAppAccessibilityService : AccessibilityService() {
                     getSystemService(WINDOW_SERVICE) as WindowManager
                 windowManager.removeView(view)
             } catch (_: Exception) {
-                // The window may already have been removed by Android.
+                // Android may already have removed the window.
             }
         }
     }
@@ -354,20 +337,46 @@ class WhatsAppAccessibilityService : AccessibilityService() {
         removeOverlay("channels")
     }
 
+    private fun findViewIdBounds(
+        node: AccessibilityNodeInfo,
+        expected: String
+    ): Rect? {
+        if (node.viewIdResourceName?.contains(
+                expected,
+                ignoreCase = true
+            ) == true
+        ) {
+            val bounds = Rect()
+            node.getBoundsInScreen(bounds)
+            if (!bounds.isEmpty) return bounds
+        }
+
+        for (i in 0 until node.childCount) {
+            val child = node.getChild(i) ?: continue
+            try {
+                val result = findViewIdBounds(child, expected)
+                if (result != null) return result
+            } finally {
+                child.recycle()
+            }
+        }
+
+        return null
+    }
+
     private fun findLabelBounds(
         node: AccessibilityNodeInfo,
         expected: String
     ): Rect? {
-        val nodeText = node.text?.toString()?.trim().orEmpty()
+        val text = node.text?.toString()?.trim().orEmpty()
         val description =
             node.contentDescription?.toString()?.trim().orEmpty()
 
-        if (nodeText.equals(expected, ignoreCase = true) ||
+        if (text.equals(expected, ignoreCase = true) ||
             description.equals(expected, ignoreCase = true)
         ) {
             val bounds = Rect()
             node.getBoundsInScreen(bounds)
-
             if (!bounds.isEmpty) return bounds
         }
 
@@ -387,9 +396,9 @@ class WhatsAppAccessibilityService : AccessibilityService() {
     private fun dp(value: Int): Int =
         (value * resources.displayMetrics.density).toInt()
 
-    // -----------------------------------------------------------------
+    // ---------------------------------------------------------------
     // EXISTING BLOCKING LOGIC
-    // -----------------------------------------------------------------
+    // ---------------------------------------------------------------
 
     private fun startCooldown() {
         val until = System.currentTimeMillis() + COOLDOWN_MS
@@ -432,6 +441,7 @@ class WhatsAppAccessibilityService : AccessibilityService() {
         root: AccessibilityNodeInfo
     ): Boolean {
         return containsViewId(root, "playback_progress") ||
+            containsViewId(root, "status_playback_image") ||
             containsText(root, "Status 1 of") ||
             containsText(root, "Status 2 of") ||
             containsText(root, "Status 3 of") ||
@@ -472,17 +482,13 @@ class WhatsAppAccessibilityService : AccessibilityService() {
                 expected,
                 ignoreCase = true
             ) == true
-        ) {
-            return true
-        }
+        ) return true
 
         if (node.contentDescription?.toString()?.contains(
                 expected,
                 ignoreCase = true
             ) == true
-        ) {
-            return true
-        }
+        ) return true
 
         for (i in 0 until node.childCount) {
             val child = node.getChild(i) ?: continue
@@ -504,9 +510,7 @@ class WhatsAppAccessibilityService : AccessibilityService() {
                 expected,
                 ignoreCase = true
             ) == true
-        ) {
-            return true
-        }
+        ) return true
 
         for (i in 0 until node.childCount) {
             val child = node.getChild(i) ?: continue
@@ -536,9 +540,7 @@ class WhatsAppAccessibilityService : AccessibilityService() {
         }
 
         try {
-            if (root.packageName?.toString() != "com.whatsapp") {
-                return
-            }
+            if (root.packageName?.toString() != "com.whatsapp") return
 
             if (clickLabel(root, "Chats")) {
                 lastCaptureStatus =
@@ -558,18 +560,16 @@ class WhatsAppAccessibilityService : AccessibilityService() {
         node: AccessibilityNodeInfo,
         label: String
     ): Boolean {
-        val nodeText = node.text?.toString().orEmpty()
+        val text = node.text?.toString().orEmpty()
         val description =
             node.contentDescription?.toString().orEmpty()
 
-        if (nodeText.equals(label, ignoreCase = true) ||
+        if (text.equals(label, ignoreCase = true) ||
             description.equals(label, ignoreCase = true)
         ) {
             if (node.isClickable &&
                 node.performAction(AccessibilityNodeInfo.ACTION_CLICK)
-            ) {
-                return true
-            }
+            ) return true
 
             val parent = node.parent
             if (parent != null) {
@@ -578,9 +578,7 @@ class WhatsAppAccessibilityService : AccessibilityService() {
                         parent.performAction(
                             AccessibilityNodeInfo.ACTION_CLICK
                         )
-                    ) {
-                        return true
-                    }
+                    ) return true
                 } finally {
                     parent.recycle()
                 }
@@ -599,9 +597,9 @@ class WhatsAppAccessibilityService : AccessibilityService() {
         return false
     }
 
-    // -----------------------------------------------------------------
+    // ---------------------------------------------------------------
     // EXISTING DIAGNOSTIC LOGGING
-    // -----------------------------------------------------------------
+    // ---------------------------------------------------------------
 
     private fun captureScreen(
         event: AccessibilityEvent,
