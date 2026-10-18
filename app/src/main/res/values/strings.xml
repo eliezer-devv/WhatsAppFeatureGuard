@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">WhatsApp Feature Guard</string>
+    <string name="accessibility_service_name">WhatsApp Feature Guard</string>
+    <string name="accessibility_service_description">Helps restrict access to selected WhatsApp features according to your settings.</string>
+</resources>
