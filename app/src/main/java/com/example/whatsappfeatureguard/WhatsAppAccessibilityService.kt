@@ -46,6 +46,9 @@ class WhatsAppAccessibilityService : AccessibilityService() {
         private const val ROOT_RETRY_MS = 200L
         private const val MAX_ROOT_RETRIES = 5
 
+        // Allow WhatsApp time to return to Chats before going Home.
+        private const val CHATS_RETURN_DELAY_MS = 350L
+
         @Volatile
         var lastCaptureStatus: String = "Waiting for WhatsApp"
             private set
@@ -61,10 +64,20 @@ class WhatsAppAccessibilityService : AccessibilityService() {
     private var rootRetryCount = 0
     private var serviceActive = false
 
+    private var pendingLockoutReason: String? = null
+
     private val rootRetryRunnable = Runnable {
         if (serviceActive && rootRetryCount < MAX_ROOT_RETRIES) {
             rootRetryCount++
             processCurrentWindow()
+        }
+    }
+
+    private val completeLockoutStartRunnable = Runnable {
+        if (serviceActive) {
+            val reason = pendingLockoutReason
+            pendingLockoutReason = null
+            beginLockoutCountdown(reason ?: "Restricted feature")
         }
     }
 
@@ -126,8 +139,7 @@ class WhatsAppAccessibilityService : AccessibilityService() {
         val overlayChannels = prefs.getBoolean(OVERLAY_CHANNELS, false)
         val diagnosticMode = prefs.getBoolean(DIAGNOSTIC_MODE, false)
 
-        // Enforce an active lockout before any normal feature checks.
-        // This also blocks reopening WhatsApp to the Chats screen.
+        // If the lockout has started, prevent WhatsApp from reopening.
         val now = System.currentTimeMillis()
         val cooldownUntil = prefs.getLong(COOLDOWN_UNTIL, 0L)
 
@@ -138,6 +150,13 @@ class WhatsAppAccessibilityService : AccessibilityService() {
             return
         } else if (cooldownUntil != 0L) {
             finishLockout()
+        }
+
+        // While we're waiting for the Chats-first transition, don't
+        // process the restricted screen again or restart the sequence.
+        if (pendingLockoutReason != null) {
+            removeAllOverlays()
+            return
         }
 
         if (!blockStatus && !blockChannels &&
@@ -174,8 +193,6 @@ class WhatsAppAccessibilityService : AccessibilityService() {
 
             updateOverlays(root, overlayStatus, overlayChannels)
 
-            // Only start the lockout when the restricted screen itself
-            // is detected, rather than merely when its tab is tapped.
             val statusViewer =
                 blockStatus && isStatusViewer(root)
 
@@ -189,7 +206,7 @@ class WhatsAppAccessibilityService : AccessibilityService() {
                     "Channels"
                 }
 
-                startLockout(reason)
+                startLockout(reason, root)
                 return
             }
         } catch (e: Exception) {
@@ -201,16 +218,18 @@ class WhatsAppAccessibilityService : AccessibilityService() {
     }
 
     // ---------------------------------------------------------------
-    // TEN-SECOND LOCKOUT AND COUNTDOWN NOTIFICATION
+    // CHATS-FIRST RETURN, THEN TEN-SECOND LOCKOUT
     // ---------------------------------------------------------------
 
-    private fun startLockout(reason: String) {
+    private fun startLockout(
+        reason: String,
+        root: AccessibilityNodeInfo
+    ) {
         val prefs = getSharedPreferences(PREFS_NAME, MODE_PRIVATE)
         val existingUntil = prefs.getLong(COOLDOWN_UNTIL, 0L)
         val now = System.currentTimeMillis()
 
-        // Do not restart the countdown repeatedly while a restricted
-        // screen is still visible.
+        // If a lockout is already running, keep its original end time.
         if (existingUntil > now) {
             removeAllOverlays()
             updateLockoutNotification(existingUntil)
@@ -218,20 +237,61 @@ class WhatsAppAccessibilityService : AccessibilityService() {
             return
         }
 
-        val until = now + COOLDOWN_MS
+        // Prevent repeated events from scheduling multiple transitions.
+        if (pendingLockoutReason != null) return
 
-        prefs.edit()
+        pendingLockoutReason = reason
+        removeAllOverlays()
+
+        val returnedToChats = tryReturnToChats(root)
+
+        lastCaptureStatus = if (returnedToChats) {
+            "$reason opened; attempted return to Chats"
+        } else {
+            "$reason opened; attempting Back to Chats"
+        }
+
+        // Allow the UI to react to the Chats click or Back action first.
+        handler.removeCallbacks(completeLockoutStartRunnable)
+        handler.postDelayed(
+            completeLockoutStartRunnable,
+            CHATS_RETURN_DELAY_MS
+        )
+    }
+
+    private fun tryReturnToChats(
+        root: AccessibilityNodeInfo
+    ): Boolean {
+        // If we're already on Chats, there's no need to click it.
+        if (isChatsScreen(root)) return true
+
+        // Prefer tapping the Chats tab if it's present.
+        if (clickLabel(root, "Chats")) return true
+
+        // Otherwise try Back to leave the restricted screen.
+        // This is a best-effort fallback; it may not always land on Chats.
+        performGlobalAction(GLOBAL_ACTION_BACK)
+        return false
+    }
+
+    private fun beginLockoutCountdown(reason: String) {
+        if (!serviceActive) return
+
+        removeAllOverlays()
+
+        val until = System.currentTimeMillis() + COOLDOWN_MS
+
+        getSharedPreferences(PREFS_NAME, MODE_PRIVATE)
+            .edit()
             .putLong(COOLDOWN_UNTIL, until)
             .apply()
 
         lastCaptureStatus =
             "$reason opened; WhatsApp locked for 10 seconds"
 
-        removeAllOverlays()
         updateLockoutNotification(until)
 
-        // Leave WhatsApp immediately. Android does not let an ordinary
-        // app force-stop another app, so this uses the Home action.
+        // After attempting the Chats transition, leave WhatsApp.
         performGlobalAction(GLOBAL_ACTION_HOME)
     }
 
@@ -275,7 +335,7 @@ class WhatsAppAccessibilityService : AccessibilityService() {
                 getSystemService(NOTIFICATION_SERVICE)
                     as NotificationManager
 
-            val notification = if (
+            val builder = if (
                 Build.VERSION.SDK_INT >= Build.VERSION_CODES.O
             ) {
                 Notification.Builder(this, NOTIFICATION_CHANNEL_ID)
@@ -284,6 +344,8 @@ class WhatsAppAccessibilityService : AccessibilityService() {
                 Notification.Builder(this)
                     .setPriority(Notification.PRIORITY_LOW)
             }
+
+            val notification = builder
                 .setSmallIcon(android.R.drawable.ic_lock_lock)
                 .setContentTitle("WhatsApp temporarily locked")
                 .setContentText(
@@ -294,7 +356,11 @@ class WhatsAppAccessibilityService : AccessibilityService() {
                 .setOngoing(true)
                 .setOnlyAlertOnce(true)
                 .setCategory(Notification.CATEGORY_STATUS)
-                .setProgress(10, (10 - secondsRemaining).coerceIn(0, 10), false)
+                .setProgress(
+                    10,
+                    (10 - secondsRemaining).coerceIn(0, 10),
+                    false
+                )
                 .build()
 
             manager.notify(NOTIFICATION_ID, notification)
@@ -309,7 +375,6 @@ class WhatsAppAccessibilityService : AccessibilityService() {
                 "Notification error: ${e.javaClass.simpleName}"
         }
 
-        // Refresh the displayed countdown every second.
         handler.postDelayed(
             lockoutCountdownRunnable,
             minOf(1000L, remainingMs)
@@ -566,31 +631,6 @@ class WhatsAppAccessibilityService : AccessibilityService() {
     // FEATURE DETECTION
     // ---------------------------------------------------------------
 
-    private fun isStatusRowClick(
-        event: AccessibilityEvent
-    ): Boolean {
-        if (event.eventType != AccessibilityEvent.TYPE_VIEW_CLICKED) {
-            return false
-        }
-
-        val source = event.source ?: return false
-
-        return try {
-            val id = source.viewIdResourceName.orEmpty()
-            val description =
-                source.contentDescription?.toString().orEmpty()
-            val text = source.text?.toString().orEmpty()
-
-            id.contains("status_row_container", ignoreCase = true) ||
-                id.contains("my_status_row_container", ignoreCase = true) ||
-                description.contains("My status", ignoreCase = true) ||
-                description.contains("unread statuses", ignoreCase = true) ||
-                text.equals("My status", ignoreCase = true)
-        } finally {
-            source.recycle()
-        }
-    }
-
     private fun isStatusViewer(
         root: AccessibilityNodeInfo
     ): Boolean {
@@ -605,8 +645,6 @@ class WhatsAppAccessibilityService : AccessibilityService() {
     private fun isChannelsScreen(
         root: AccessibilityNodeInfo
     ): Boolean {
-        // The Updates list itself can contain channel rows.
-        // Do not mistake that list for the opened Channels directory.
         if (containsViewId(root, "updates_list")) return false
 
         return isChannelsDiscoveryScreen(root) ||
@@ -707,39 +745,6 @@ class WhatsAppAccessibilityService : AccessibilityService() {
         }
 
         return false
-    }
-
-    // Retained for compatibility with the previous implementation.
-    private fun redirectToChats() {
-        val now = System.currentTimeMillis()
-
-        if (now - lastRedirectTime < REDIRECT_THROTTLE_MS) return
-        lastRedirectTime = now
-
-        val root = rootInActiveWindow
-
-        if (root == null) {
-            performGlobalAction(GLOBAL_ACTION_BACK)
-            lastCaptureStatus =
-                "Restricted feature detected; attempted Back"
-            return
-        }
-
-        try {
-            if (root.packageName?.toString() != "com.whatsapp") return
-
-            if (clickLabel(root, "Chats")) {
-                lastCaptureStatus =
-                    "Restricted feature blocked; returned to Chats"
-                return
-            }
-        } finally {
-            root.recycle()
-        }
-
-        performGlobalAction(GLOBAL_ACTION_BACK)
-        lastCaptureStatus =
-            "Restricted feature detected; attempted to leave screen"
     }
 
     private fun clickLabel(
@@ -911,6 +916,7 @@ class WhatsAppAccessibilityService : AccessibilityService() {
     override fun onDestroy() {
         serviceActive = false
         handler.removeCallbacks(rootRetryRunnable)
+        handler.removeCallbacks(completeLockoutStartRunnable)
         handler.removeCallbacks(lockoutCountdownRunnable)
         removeAllOverlays()
         super.onDestroy()
