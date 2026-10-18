@@ -8,6 +8,7 @@ import android.graphics.drawable.ColorDrawable
 import android.os.Handler
 import android.os.Looper
 import android.view.Gravity
+import android.view.MotionEvent
 import android.view.View
 import android.view.WindowManager
 import android.view.accessibility.AccessibilityEvent
@@ -129,7 +130,6 @@ class WhatsAppAccessibilityService : AccessibilityService() {
 
             updateOverlays(root, overlayStatus, overlayChannels)
 
-            // Existing cooldown and blocking flow.
             val now = System.currentTimeMillis()
             val cooldownUntil = prefs.getLong(COOLDOWN_UNTIL, 0L)
 
@@ -179,7 +179,6 @@ class WhatsAppAccessibilityService : AccessibilityService() {
 
         val channelsStart = channelsHeading ?: followChannel
 
-        // Recognize Updates even when the Channels heading is absent.
         val onUpdatesList =
             updatesList != null &&
                 !isStatusViewer(root) &&
@@ -202,9 +201,8 @@ class WhatsAppAccessibilityService : AccessibilityService() {
             return
         }
 
-        // When the Channels heading is missing, fall back to the
-        // visible Updates list boundary. This may temporarily cover
-        // channel content too, until the heading becomes available.
+        // If the Channels heading is unavailable, use the visible
+        // Updates list as a fallback boundary.
         val sectionBottom = channelsStart?.top
             ?.minus(dp(4))
             ?: list.bottom.coerceAtMost(screenHeight)
@@ -228,7 +226,6 @@ class WhatsAppAccessibilityService : AccessibilityService() {
             removeOverlay("status")
         }
 
-        // Keep the Channels overlay independent.
         if (overlayChannels && channelsStart != null) {
             val top = (channelsStart.top - dp(4))
                 .coerceAtLeast(list.top)
@@ -274,8 +271,18 @@ class WhatsAppAccessibilityService : AccessibilityService() {
             gravity = Gravity.CENTER
             setPadding(dp(12), dp(8), dp(12), dp(8))
             background = ColorDrawable(Color.rgb(247, 247, 247))
+
+            // Make the overlay consume touch events instead of
+            // allowing taps to reach WhatsApp underneath it.
+            isClickable = true
+            isFocusable = false
             importantForAccessibility =
                 View.IMPORTANT_FOR_ACCESSIBILITY_NO
+
+            setOnTouchListener { _, event ->
+                event.action != MotionEvent.ACTION_CANCEL ||
+                    true
+            }
         }
 
         view.text = label
@@ -285,7 +292,6 @@ class WhatsAppAccessibilityService : AccessibilityService() {
             bounds.height(),
             WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY,
             WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
-                WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE or
                 WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN,
             PixelFormat.TRANSLUCENT
         ).apply {
@@ -452,8 +458,6 @@ class WhatsAppAccessibilityService : AccessibilityService() {
                 containsText(root, "Find channels") ||
                 containsText(root, "Discover channels")
 
-        // Preserve the original indicators and recognize the
-        // separate Explore/discovery screen.
         return existingChannelIndicators ||
             (!hasUpdatesList && isChannelsDiscoveryScreen(root))
     }
@@ -461,10 +465,8 @@ class WhatsAppAccessibilityService : AccessibilityService() {
     private fun isChannelsDiscoveryScreen(
         root: AccessibilityNodeInfo
     ): Boolean {
-        // The normal Updates list is not the Explore screen.
         if (containsViewId(root, "updates_list")) return false
 
-        // Recognize the channel directory without relying on text.
         if (containsViewId(root, "directory_category_list")) {
             return true
         }
