@@ -10,14 +10,16 @@ import android.content.pm.PackageManager
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
+import android.provider.Settings
+import android.graphics.Typeface
+import android.view.Gravity
+import android.view.ViewGroup
 import android.widget.Button
+import android.widget.CheckBox
 import android.widget.LinearLayout
 import android.widget.ScrollView
 import android.widget.TextView
 import android.widget.Toast
-import android.graphics.Typeface
-import android.view.Gravity
-import android.view.ViewGroup
 import androidx.core.content.FileProvider
 import java.io.File
 
@@ -26,12 +28,17 @@ class MainActivity : Activity() {
     companion object {
         private const val PREFS_NAME = "feature_guard_settings"
         private const val DIAGNOSTIC_MODE = "diagnostic_mode"
+        private const val BLOCK_STATUS = "block_status"
+        private const val BLOCK_CHANNELS = "block_channels"
+        private const val COOLDOWN_UNTIL = "cooldown_until"
         private const val LOG_FILE = "whatsapp_accessibility_log.txt"
         private const val REQUEST_NOTIFICATIONS = 1001
     }
 
     private lateinit var statusText: TextView
     private lateinit var diagnosticText: TextView
+    private lateinit var statusCheckBox: CheckBox
+    private lateinit var channelsCheckBox: CheckBox
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -74,18 +81,40 @@ class MainActivity : Activity() {
         outer.addView(title, matchWrap())
 
         val explanation = TextView(this).apply {
-            text = "Diagnostic build\n\nAutomatic blocking is disabled in this version. " +
-                "Use diagnostic mode while navigating WhatsApp to collect UI information."
+            text = "Choose which WhatsApp features to block. " +
+                "The accessibility service must be enabled in Android Settings."
             textSize = 16f
             setTextColor(0xFF333333.toInt())
             setPadding(0, dp(12), 0, dp(16))
         }
         outer.addView(explanation, matchWrap())
 
+        statusCheckBox = CheckBox(this).apply {
+            text = "Block Status"
+            textSize = 17f
+            isChecked = getSetting(BLOCK_STATUS)
+            setOnCheckedChangeListener { _, checked ->
+                saveSetting(BLOCK_STATUS, checked)
+                refreshStatus()
+            }
+        }
+        outer.addView(statusCheckBox, matchWrap())
+
+        channelsCheckBox = CheckBox(this).apply {
+            text = "Block Channels"
+            textSize = 17f
+            isChecked = getSetting(BLOCK_CHANNELS)
+            setOnCheckedChangeListener { _, checked ->
+                saveSetting(BLOCK_CHANNELS, checked)
+                refreshStatus()
+            }
+        }
+        outer.addView(channelsCheckBox, matchWrap())
+
         statusText = TextView(this).apply {
             textSize = 15f
             setTextColor(0xFF222222.toInt())
-            setPadding(0, dp(8), 0, dp(12))
+            setPadding(0, dp(12), 0, dp(12))
         }
         outer.addView(statusText, matchWrap())
 
@@ -96,12 +125,16 @@ class MainActivity : Activity() {
         }
         outer.addView(diagnosticText, matchWrap())
 
-        addButton(outer, "Enable diagnostic mode") {
-            setDiagnosticMode(true)
+        addButton(outer, "Enable diagnostic logging") {
+            saveSetting(DIAGNOSTIC_MODE, true)
+            toast("Diagnostic logging enabled.")
+            refreshStatus()
         }
 
-        addButton(outer, "Disable diagnostic mode") {
-            setDiagnosticMode(false)
+        addButton(outer, "Disable diagnostic logging") {
+            saveSetting(DIAGNOSTIC_MODE, false)
+            toast("Diagnostic logging disabled.")
+            refreshStatus()
         }
 
         addButton(outer, "Refresh status") {
@@ -109,7 +142,9 @@ class MainActivity : Activity() {
         }
 
         addButton(outer, "Open WhatsApp") {
-            val launchIntent = packageManager.getLaunchIntentForPackage("com.whatsapp")
+            val launchIntent =
+                packageManager.getLaunchIntentForPackage("com.whatsapp")
+
             if (launchIntent != null) {
                 startActivity(launchIntent)
             } else {
@@ -130,41 +165,52 @@ class MainActivity : Activity() {
         }
 
         addButton(outer, "Open Accessibility settings") {
-            startActivity(Intent(android.provider.Settings.ACTION_ACCESSIBILITY_SETTINGS))
+            startActivity(
+                Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS)
+            )
         }
 
         setContentView(scroll)
     }
 
-    private fun setDiagnosticMode(enabled: Boolean) {
+    private fun getSetting(key: String): Boolean =
+        getSharedPreferences(PREFS_NAME, MODE_PRIVATE)
+            .getBoolean(key, false)
+
+    private fun saveSetting(key: String, value: Boolean) {
         getSharedPreferences(PREFS_NAME, MODE_PRIVATE)
             .edit()
-            .putBoolean(DIAGNOSTIC_MODE, enabled)
+            .putBoolean(key, value)
             .apply()
-
-        toast(if (enabled) {
-            "Diagnostic mode enabled. Open WhatsApp and navigate normally."
-        } else {
-            "Diagnostic mode disabled."
-        })
-
-        refreshStatus()
     }
 
     private fun refreshStatus() {
-        val enabled = getSharedPreferences(PREFS_NAME, MODE_PRIVATE)
-            .getBoolean(DIAGNOSTIC_MODE, false)
+        val prefs = getSharedPreferences(PREFS_NAME, MODE_PRIVATE)
+        val diagnosticEnabled =
+            prefs.getBoolean(DIAGNOSTIC_MODE, false)
+        val cooldownUntil = prefs.getLong(COOLDOWN_UNTIL, 0L)
+        val remainingSeconds = (
+            (cooldownUntil - System.currentTimeMillis()).coerceAtLeast(0L)
+                / 1000L
+            )
 
-        statusText.text = "Diagnostic mode: " +
-            if (enabled) "ON" else "OFF"
+        statusText.text = buildString {
+            appendLine("Block Status: " +
+                if (prefs.getBoolean(BLOCK_STATUS, false)) "ON" else "OFF")
+            appendLine("Block Channels: " +
+                if (prefs.getBoolean(BLOCK_CHANNELS, false)) "ON" else "OFF")
+            appendLine("Diagnostic logging: " +
+                if (diagnosticEnabled) "ON" else "OFF")
+            appendLine("Cooldown remaining: ${remainingSeconds}s")
+        }
 
         val serviceEnabled = isAccessibilityServiceEnabled()
 
         diagnosticText.text = buildString {
             appendLine("Accessibility service: " +
-                if (serviceEnabled) "enabled in system settings" else "not enabled")
+                if (serviceEnabled) "enabled in system settings" else "NOT ENABLED")
             appendLine()
-            appendLine("Latest capture status:")
+            appendLine("Latest service status:")
             appendLine(WhatsAppAccessibilityService.lastCaptureStatus)
             appendLine()
             append("Saved log size: ${logFile().length()} bytes")
@@ -172,10 +218,12 @@ class MainActivity : Activity() {
     }
 
     private fun isAccessibilityServiceEnabled(): Boolean {
-        val expected = "$packageName/${WhatsAppAccessibilityService::class.java.name}"
-        val enabledServices = android.provider.Settings.Secure.getString(
+        val expected =
+            "$packageName/${WhatsAppAccessibilityService::class.java.name}"
+
+        val enabledServices = Settings.Secure.getString(
             contentResolver,
-            android.provider.Settings.Secure.ENABLED_ACCESSIBILITY_SERVICES
+            Settings.Secure.ENABLED_ACCESSIBILITY_SERVICES
         ) ?: return false
 
         return enabledServices.split(':').any {
@@ -189,25 +237,27 @@ class MainActivity : Activity() {
         val file = logFile()
 
         if (!file.exists() || file.length() == 0L) {
-            toast("No log yet. Enable diagnostic mode and navigate WhatsApp first.")
+            toast("No log yet. Enable logging and navigate WhatsApp first.")
             return
         }
 
         try {
             val uri: Uri = FileProvider.getUriForFile(
-                this,
-                "$packageName.fileprovider",
-                file
+                this, "$packageName.fileprovider", file
             )
 
             val intent = Intent(Intent.ACTION_SEND).apply {
                 type = "text/plain"
                 putExtra(Intent.EXTRA_STREAM, uri)
-                clipData = ClipData.newUri(contentResolver, "WhatsApp UI log", uri)
+                clipData = ClipData.newUri(
+                    contentResolver, "WhatsApp UI log", uri
+                )
                 addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
             }
 
-            startActivity(Intent.createChooser(intent, "Share diagnostic log"))
+            startActivity(
+                Intent.createChooser(intent, "Share diagnostic log")
+            )
         } catch (e: Exception) {
             toast("Could not share log: ${e.javaClass.simpleName}")
         }
@@ -217,16 +267,20 @@ class MainActivity : Activity() {
         val file = logFile()
 
         if (!file.exists() || file.length() == 0L) {
-            toast("No log yet. Enable diagnostic mode and navigate WhatsApp first.")
+            toast("No log yet. Enable logging and navigate WhatsApp first.")
             return
         }
 
         try {
-            val clipboard = getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+            val clipboard =
+                getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+
             clipboard.setPrimaryClip(
-                ClipData.newPlainText("WhatsApp accessibility log", file.readText())
+                ClipData.newPlainText(
+                    "WhatsApp accessibility log", file.readText()
+                )
             )
-            toast("Log copied. Paste it into a private note or chat.")
+            toast("Diagnostic log copied.")
         } catch (e: Exception) {
             toast("Could not copy log: ${e.javaClass.simpleName}")
         }
