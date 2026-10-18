@@ -1,17 +1,21 @@
+
 package com.example.whatsappfeatureguard
 
+import android.Manifest
 import android.accessibilityservice.AccessibilityServiceInfo
 import android.content.ComponentName
 import android.content.Intent
+import android.content.pm.PackageManager
+import android.graphics.Color
+import android.os.Build
 import android.os.Bundle
 import android.provider.Settings
+import android.view.Gravity
+import android.view.ViewGroup
 import android.view.accessibility.AccessibilityManager
 import android.widget.Button
 import android.widget.LinearLayout
 import android.widget.TextView
-import android.view.ViewGroup
-import android.graphics.Color
-import android.view.Gravity
 
 class MainActivity : android.app.Activity() {
 
@@ -19,6 +23,8 @@ class MainActivity : android.app.Activity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+
+        requestNotificationPermissionIfNeeded()
 
         val layout = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
@@ -93,6 +99,18 @@ class MainActivity : android.app.Activity() {
         updateStatus()
     }
 
+    private fun requestNotificationPermissionIfNeeded() {
+        if (Build.VERSION.SDK_INT >= 33 &&
+            checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) !=
+            PackageManager.PERMISSION_GRANTED
+        ) {
+            requestPermissions(
+                arrayOf(Manifest.permission.POST_NOTIFICATIONS),
+                100
+            )
+        }
+    }
+
     override fun onResume() {
         super.onResume()
         if (::statusText.isInitialized) {
@@ -121,12 +139,27 @@ class MainActivity : android.app.Activity() {
                 }
             }
 
-        statusText.text = if (enabled) {
-            "Accessibility service: ENABLED\n\n" +
-            "Feature blocking will depend on the service implementation."
-        } else {
-            "Accessibility service: DISABLED\n\n" +
-            "Enable the service in Android Settings to continue."
+        val notificationPermission = Build.VERSION.SDK_INT < 33 ||
+            checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) ==
+            PackageManager.PERMISSION_GRANTED
+
+        statusText.text = buildString {
+            append(
+                if (enabled) {
+                    "Accessibility service: ENABLED"
+                } else {
+                    "Accessibility service: DISABLED"
+                }
+            )
+
+            append("\n\nNotifications: ")
+            append(
+                if (notificationPermission) {
+                    "ALLOWED"
+                } else {
+                    "NOT ALLOWED"
+                }
+            )
         }
     }
 }
