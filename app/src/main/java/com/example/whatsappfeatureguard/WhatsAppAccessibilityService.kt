@@ -3,6 +3,7 @@ package com.example.whatsappfeatureguard
 import android.accessibilityservice.AccessibilityService
 import android.view.accessibility.AccessibilityEvent
 import android.view.accessibility.AccessibilityNodeInfo
+import android.graphics.Rect
 import java.io.File
 import java.text.SimpleDateFormat
 import java.util.Date
@@ -13,11 +14,15 @@ class WhatsAppAccessibilityService : AccessibilityService() {
     companion object {
         private const val PREFS_NAME = "feature_guard_settings"
         private const val DIAGNOSTIC_MODE = "diagnostic_mode"
+        private const val BLOCK_STATUS = "block_status"
+        private const val BLOCK_CHANNELS = "block_channels"
+        private const val COOLDOWN_UNTIL = "cooldown_until"
         private const val LOG_FILE = "whatsapp_accessibility_log.txt"
 
         private const val MAX_LOG_BYTES = 2 * 1024 * 1024
         private const val MAX_NODES = 500
         private const val MAX_DEPTH = 30
+        private const val COOLDOWN_MS = 10_000L
 
         @Volatile
         var lastCaptureStatus: String = "Waiting for WhatsApp"
@@ -26,6 +31,7 @@ class WhatsAppAccessibilityService : AccessibilityService() {
 
     private var lastSnapshot = ""
     private var lastCaptureTime = 0L
+    private var lastRedirectTime = 0L
 
     override fun onServiceConnected() {
         super.onServiceConnected()
@@ -37,58 +43,257 @@ class WhatsAppAccessibilityService : AccessibilityService() {
         if (event.packageName?.toString() != "com.whatsapp") return
 
         val prefs = getSharedPreferences(PREFS_NAME, MODE_PRIVATE)
+        val blockStatus = prefs.getBoolean(BLOCK_STATUS, false)
+        val blockChannels = prefs.getBoolean(BLOCK_CHANNELS, false)
+        val diagnosticMode = prefs.getBoolean(DIAGNOSTIC_MODE, false)
 
-        // Diagnostic mode only: never block or redirect the user.
-        if (!prefs.getBoolean(DIAGNOSTIC_MODE, false)) return
+        val root = rootInActiveWindow
 
-        val now = System.currentTimeMillis()
-
-        // Avoid capturing the same screen repeatedly at high frequency.
-        if (now - lastCaptureTime < 400) return
-
-        val root = rootInActiveWindow ?: run {
-            lastCaptureStatus = "WhatsApp detected, but no accessible root"
+        if (root == null) {
+            if (diagnosticMode) {
+                lastCaptureStatus = "WhatsApp detected, but no accessible root"
+            }
             return
         }
 
         try {
-            val output = StringBuilder()
-            val timestamp = SimpleDateFormat(
-                "yyyy-MM-dd HH:mm:ss.SSS",
-                Locale.US
-            ).format(Date(now))
+            // Keep diagnostic capture available independently of blocking.
+            if (diagnosticMode) {
+                captureScreen(event, root)
+            }
 
-            output.appendLine()
-            output.appendLine("==================================================")
-            output.appendLine("CAPTURE: $timestamp")
-            output.appendLine("PACKAGE: ${event.packageName}")
-            output.appendLine("EVENT_TYPE: ${eventTypeName(event.eventType)}")
-            output.appendLine("WINDOW_ID: ${root.windowId}")
-            output.appendLine("==================================================")
+            if (!blockStatus && !blockChannels) return
 
-            val counter = intArrayOf(0)
-            appendNodeTree(
-                node = root,
-                output = output,
-                depth = 0,
-                counter = counter
-            )
+            val statusViewer = blockStatus && isStatusViewer(root)
+            val statusRowClicked = blockStatus && isStatusRowClick(event)
+            val channelsScreen = blockChannels && isChannelsScreen(root)
 
-            val snapshot = output.toString()
-
-            // Skip identical consecutive trees.
-            if (snapshot == lastSnapshot) return
-
-            appendToLog(snapshot)
-
-            lastSnapshot = snapshot
-            lastCaptureTime = now
-            lastCaptureStatus = "Captured ${counter[0]} UI elements at $timestamp"
+            if (statusViewer || statusRowClicked || channelsScreen) {
+                redirectToChats()
+            }
         } catch (e: Exception) {
-            lastCaptureStatus = "Capture error: ${e.javaClass.simpleName}"
+            lastCaptureStatus =
+                "Service error: ${e.javaClass.simpleName}"
         } finally {
             root.recycle()
         }
+    }
+
+    private fun isStatusRowClick(event: AccessibilityEvent): Boolean {
+        if (event.eventType != AccessibilityEvent.TYPE_VIEW_CLICKED) {
+            return false
+        }
+
+        val source = event.source ?: return false
+
+        return try {
+            val id = source.viewIdResourceName.orEmpty()
+            val description = source.contentDescription
+                ?.toString().orEmpty()
+            val text = source.text?.toString().orEmpty()
+
+            id.contains("status_row_container", ignoreCase = true) ||
+                id.contains("my_status_row_container", ignoreCase = true) ||
+                description.contains("My status", ignoreCase = true) ||
+                description.contains("unread statuses", ignoreCase = true) ||
+                text.equals("My status", ignoreCase = true)
+        } finally {
+            source.recycle()
+        }
+    }
+
+    private fun isStatusViewer(root: AccessibilityNodeInfo): Boolean {
+        val hasProgress = containsViewId(root, "playback_progress")
+        val hasStatusCounter = containsText(root, "Status 1 of") ||
+            containsText(root, "Status 2 of") ||
+            containsText(root, "Status 3 of") ||
+            containsText(root, "Status 4 of")
+
+        // The viewer normally exposes its progress bar or status counter.
+        // Requiring a viewer-specific marker avoids blocking the entire
+        // Updates screen merely because status rows are visible.
+        return hasProgress || hasStatusCounter
+    }
+
+    private fun isChannelsScreen(root: AccessibilityNodeInfo): Boolean {
+        val hasFollowChannel = containsText(root, "FOLLOW CHANNEL") ||
+            containsText(root, "Follow channel")
+
+        val hasChannelDirectoryLabel =
+            containsText(root, "Find channels") ||
+            containsText(root, "Discover channels")
+
+        return hasFollowChannel || hasChannelDirectoryLabel
+    }
+
+    private fun containsText(
+        node: AccessibilityNodeInfo,
+        expected: String
+    ): Boolean {
+        if (node.text?.toString()?.contains(
+                expected,
+                ignoreCase = true
+            ) == true
+        ) {
+            return true
+        }
+
+        if (node.contentDescription?.toString()?.contains(
+                expected,
+                ignoreCase = true
+            ) == true
+        ) {
+            return true
+        }
+
+        for (i in 0 until node.childCount) {
+            val child = node.getChild(i) ?: continue
+            try {
+                if (containsText(child, expected)) return true
+            } finally {
+                child.recycle()
+            }
+        }
+
+        return false
+    }
+
+    private fun containsViewId(
+        node: AccessibilityNodeInfo,
+        expected: String
+    ): Boolean {
+        if (node.viewIdResourceName?.contains(
+                expected,
+                ignoreCase = true
+            ) == true
+        ) {
+            return true
+        }
+
+        for (i in 0 until node.childCount) {
+            val child = node.getChild(i) ?: continue
+            try {
+                if (containsViewId(child, expected)) return true
+            } finally {
+                child.recycle()
+            }
+        }
+
+        return false
+    }
+
+    private fun redirectToChats() {
+        val now = System.currentTimeMillis()
+
+        // Prevent repeated redirection attempts from flooding the UI.
+        if (now - lastRedirectTime < 700) return
+        lastRedirectTime = now
+
+        val prefs = getSharedPreferences(PREFS_NAME, MODE_PRIVATE)
+        val cooldownUntil = prefs.getLong(COOLDOWN_UNTIL, 0L)
+
+        if (now >= cooldownUntil) {
+            prefs.edit()
+                .putLong(COOLDOWN_UNTIL, now + COOLDOWN_MS)
+                .apply()
+        }
+
+        val root = rootInActiveWindow ?: return
+
+        try {
+            if (clickLabel(root, "Chats")) {
+                lastCaptureStatus =
+                    "Restricted feature blocked; returned to Chats"
+                return
+            }
+        } finally {
+            root.recycle()
+        }
+
+        // Fallback if the Chats tab isn't exposed as a clickable label.
+        performGlobalAction(GLOBAL_ACTION_BACK)
+        lastCaptureStatus =
+            "Restricted feature detected; attempted to return to Chats"
+    }
+
+    private fun clickLabel(
+        node: AccessibilityNodeInfo,
+        label: String
+    ): Boolean {
+        val nodeText = node.text?.toString().orEmpty()
+        val description = node.contentDescription?.toString().orEmpty()
+
+        if (nodeText.equals(label, ignoreCase = true) ||
+            description.equals(label, ignoreCase = true)
+        ) {
+            if (node.isClickable &&
+                node.performAction(AccessibilityNodeInfo.ACTION_CLICK)
+            ) {
+                return true
+            }
+
+            val parent = node.parent
+            if (parent != null) {
+                try {
+                    if (parent.isClickable &&
+                        parent.performAction(
+                            AccessibilityNodeInfo.ACTION_CLICK
+                        )
+                    ) {
+                        return true
+                    }
+                } finally {
+                    parent.recycle()
+                }
+            }
+        }
+
+        for (i in 0 until node.childCount) {
+            val child = node.getChild(i) ?: continue
+            try {
+                if (clickLabel(child, label)) return true
+            } finally {
+                child.recycle()
+            }
+        }
+
+        return false
+    }
+
+    private fun captureScreen(
+        event: AccessibilityEvent,
+        root: AccessibilityNodeInfo
+    ) {
+        val now = System.currentTimeMillis()
+
+        if (now - lastCaptureTime < 400) return
+
+        val output = StringBuilder()
+        val timestamp = SimpleDateFormat(
+            "yyyy-MM-dd HH:mm:ss.SSS",
+            Locale.US
+        ).format(Date(now))
+
+        output.appendLine()
+        output.appendLine("==================================================")
+        output.appendLine("CAPTURE: $timestamp")
+        output.appendLine("PACKAGE: ${event.packageName}")
+        output.appendLine("EVENT_TYPE: ${eventTypeName(event.eventType)}")
+        output.appendLine("WINDOW_ID: ${root.windowId}")
+        output.appendLine("==================================================")
+
+        val counter = intArrayOf(0)
+        appendNodeTree(root, output, 0, counter)
+
+        val snapshot = output.toString()
+
+        if (snapshot == lastSnapshot) return
+
+        appendToLog(snapshot)
+        lastSnapshot = snapshot
+        lastCaptureTime = now
+        lastCaptureStatus =
+            "Captured ${counter[0]} UI elements at $timestamp"
     }
 
     private fun appendNodeTree(
@@ -102,18 +307,19 @@ class WhatsAppAccessibilityService : AccessibilityService() {
         counter[0]++
 
         val indent = "  ".repeat(depth.coerceAtMost(MAX_DEPTH))
-        val bounds = android.graphics.Rect()
+        val bounds = Rect()
         node.getBoundsInScreen(bounds)
 
-        output.append(indent)
-            .append("NODE ")
-            .append(counter[0])
-            .appendLine()
-
+        output.append(indent).append("NODE ")
+            .append(counter[0]).appendLine()
         output.append(indent).appendLine("  class=${clean(node.className)}")
         output.append(indent).appendLine("  text=${clean(node.text)}")
-        output.append(indent).appendLine("  contentDescription=${clean(node.contentDescription)}")
-        output.append(indent).appendLine("  viewId=${clean(node.viewIdResourceName)}")
+        output.append(indent).appendLine(
+            "  contentDescription=${clean(node.contentDescription)}"
+        )
+        output.append(indent).appendLine(
+            "  viewId=${clean(node.viewIdResourceName)}"
+        )
         output.append(indent).appendLine("  clickable=${node.isClickable}")
         output.append(indent).appendLine("  selected=${node.isSelected}")
         output.append(indent).appendLine("  checkable=${node.isCheckable}")
@@ -160,8 +366,10 @@ class WhatsAppAccessibilityService : AccessibilityService() {
 
     private fun eventTypeName(type: Int): String {
         return when (type) {
-            AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED -> "WINDOW_STATE_CHANGED"
-            AccessibilityEvent.TYPE_WINDOW_CONTENT_CHANGED -> "WINDOW_CONTENT_CHANGED"
+            AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED ->
+                "WINDOW_STATE_CHANGED"
+            AccessibilityEvent.TYPE_WINDOW_CONTENT_CHANGED ->
+                "WINDOW_CONTENT_CHANGED"
             AccessibilityEvent.TYPE_VIEW_SELECTED -> "VIEW_SELECTED"
             AccessibilityEvent.TYPE_VIEW_CLICKED -> "VIEW_CLICKED"
             AccessibilityEvent.TYPE_VIEW_FOCUSED -> "VIEW_FOCUSED"
