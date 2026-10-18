@@ -8,7 +8,6 @@ import android.graphics.drawable.ColorDrawable
 import android.os.Handler
 import android.os.Looper
 import android.view.Gravity
-import android.view.MotionEvent
 import android.view.View
 import android.view.WindowManager
 import android.view.accessibility.AccessibilityEvent
@@ -130,6 +129,7 @@ class WhatsAppAccessibilityService : AccessibilityService() {
 
             updateOverlays(root, overlayStatus, overlayChannels)
 
+            // Existing cooldown and blocking flow.
             val now = System.currentTimeMillis()
             val cooldownUntil = prefs.getLong(COOLDOWN_UNTIL, 0L)
 
@@ -179,6 +179,7 @@ class WhatsAppAccessibilityService : AccessibilityService() {
 
         val channelsStart = channelsHeading ?: followChannel
 
+        // Detect Updates even if the Channels heading is not exposed.
         val onUpdatesList =
             updatesList != null &&
                 !isStatusViewer(root) &&
@@ -201,8 +202,9 @@ class WhatsAppAccessibilityService : AccessibilityService() {
             return
         }
 
-        // If the Channels heading is unavailable, use the visible
-        // Updates list as a fallback boundary.
+        // Fallback: cover the visible Updates list when the Channels
+        // heading cannot be found. This may temporarily cover channel
+        // content until the heading becomes available.
         val sectionBottom = channelsStart?.top
             ?.minus(dp(4))
             ?: list.bottom.coerceAtMost(screenHeight)
@@ -226,6 +228,7 @@ class WhatsAppAccessibilityService : AccessibilityService() {
             removeOverlay("status")
         }
 
+        // Keep Channels as a separate overlay.
         if (overlayChannels && channelsStart != null) {
             val top = (channelsStart.top - dp(4))
                 .coerceAtLeast(list.top)
@@ -272,17 +275,13 @@ class WhatsAppAccessibilityService : AccessibilityService() {
             setPadding(dp(12), dp(8), dp(12), dp(8))
             background = ColorDrawable(Color.rgb(247, 247, 247))
 
-            // Make the overlay consume touch events instead of
-            // allowing taps to reach WhatsApp underneath it.
+            // Consume touch events so they do not pass through to WhatsApp.
             isClickable = true
             isFocusable = false
             importantForAccessibility =
                 View.IMPORTANT_FOR_ACCESSIBILITY_NO
 
-            setOnTouchListener { _, event ->
-                event.action != MotionEvent.ACTION_CANCEL ||
-                    true
-            }
+            setOnTouchListener { _, _ -> true }
         }
 
         view.text = label
