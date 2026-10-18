@@ -30,6 +30,8 @@ class MainActivity : Activity() {
         private const val DIAGNOSTIC_MODE = "diagnostic_mode"
         private const val BLOCK_STATUS = "block_status"
         private const val BLOCK_CHANNELS = "block_channels"
+        private const val OVERLAY_STATUS = "overlay_status"
+        private const val OVERLAY_CHANNELS = "overlay_channels"
         private const val COOLDOWN_UNTIL = "cooldown_until"
         private const val LOG_FILE = "whatsapp_accessibility_log.txt"
         private const val REQUEST_NOTIFICATIONS = 1001
@@ -39,11 +41,14 @@ class MainActivity : Activity() {
     private lateinit var diagnosticText: TextView
     private lateinit var statusCheckBox: CheckBox
     private lateinit var channelsCheckBox: CheckBox
+    private lateinit var overlayStatusCheckBox: CheckBox
+    private lateinit var overlayChannelsCheckBox: CheckBox
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
 
-        if (Build.VERSION.SDK_INT >= 33 &&
+        if (
+            Build.VERSION.SDK_INT >= 33 &&
             checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) !=
             PackageManager.PERMISSION_GRANTED
         ) {
@@ -81,7 +86,7 @@ class MainActivity : Activity() {
         outer.addView(title, matchWrap())
 
         val explanation = TextView(this).apply {
-            text = "Choose which WhatsApp features to block. " +
+            text = "Choose which WhatsApp features to block or cover. " +
                 "The accessibility service must be enabled in Android Settings."
             textSize = 16f
             setTextColor(0xFF333333.toInt())
@@ -110,6 +115,46 @@ class MainActivity : Activity() {
             }
         }
         outer.addView(channelsCheckBox, matchWrap())
+
+        val overlayHeading = TextView(this).apply {
+            text = "Updates tab overlays"
+            textSize = 19f
+            setTypeface(null, Typeface.BOLD)
+            setTextColor(0xFF202020.toInt())
+            setPadding(0, dp(18), 0, dp(4))
+        }
+        outer.addView(overlayHeading, matchWrap())
+
+        val overlayExplanation = TextView(this).apply {
+            text = "Cover the Status and Channels sections on WhatsApp's " +
+                "Updates tab. These settings are independent of the block switches."
+            textSize = 14f
+            setTextColor(0xFF444444.toInt())
+            setPadding(0, dp(2), 0, dp(8))
+        }
+        outer.addView(overlayExplanation, matchWrap())
+
+        overlayStatusCheckBox = CheckBox(this).apply {
+            text = "Overlay Status"
+            textSize = 17f
+            isChecked = getSetting(OVERLAY_STATUS)
+            setOnCheckedChangeListener { _, checked ->
+                saveSetting(OVERLAY_STATUS, checked)
+                refreshStatus()
+            }
+        }
+        outer.addView(overlayStatusCheckBox, matchWrap())
+
+        overlayChannelsCheckBox = CheckBox(this).apply {
+            text = "Overlay Channels"
+            textSize = 17f
+            isChecked = getSetting(OVERLAY_CHANNELS)
+            setOnCheckedChangeListener { _, checked ->
+                saveSetting(OVERLAY_CHANNELS, checked)
+                refreshStatus()
+            }
+        }
+        outer.addView(overlayChannelsCheckBox, matchWrap())
 
         statusText = TextView(this).apply {
             textSize = 15f
@@ -199,6 +244,10 @@ class MainActivity : Activity() {
                 if (prefs.getBoolean(BLOCK_STATUS, false)) "ON" else "OFF")
             appendLine("Block Channels: " +
                 if (prefs.getBoolean(BLOCK_CHANNELS, false)) "ON" else "OFF")
+            appendLine("Overlay Status: " +
+                if (prefs.getBoolean(OVERLAY_STATUS, false)) "ON" else "OFF")
+            appendLine("Overlay Channels: " +
+                if (prefs.getBoolean(OVERLAY_CHANNELS, false)) "ON" else "OFF")
             appendLine("Diagnostic logging: " +
                 if (diagnosticEnabled) "ON" else "OFF")
             appendLine("Cooldown remaining: ${remainingSeconds}s")
