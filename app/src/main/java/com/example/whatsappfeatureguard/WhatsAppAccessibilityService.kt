@@ -31,6 +31,8 @@ class WhatsAppAccessibilityService : AccessibilityService() {
         private const val BLOCK_CHANNELS = "block_channels"
         private const val OVERLAY_STATUS = "overlay_status"
         private const val OVERLAY_CHANNELS = "overlay_channels"
+        private const val OVERLAY_DEVICE_ADMIN_ROW =
+            "overlay_device_admin_row"
         private const val COOLDOWN_UNTIL = "cooldown_until"
         private const val LOG_FILE = "whatsapp_accessibility_log.txt"
 
@@ -48,6 +50,9 @@ class WhatsAppAccessibilityService : AccessibilityService() {
         private const val BACK_PRESS_INTERVAL_MS = 300L
         private const val MAX_BACK_PRESSES = 6
 
+        private const val DEVICE_ADMIN_SCREEN_TITLE = "Device admin apps"
+        private const val DEVICE_ADMIN_APP_TITLE = "WhatsApp Feature Guard"
+
         @Volatile
         var lastCaptureStatus: String = "Waiting for WhatsApp"
             private set
@@ -56,6 +61,10 @@ class WhatsAppAccessibilityService : AccessibilityService() {
     private val handler = Handler(Looper.getMainLooper())
     private val overlayViews = mutableMapOf<String, TextView>()
     private val overlayRects = mutableMapOf<String, Rect>()
+
+    // Kept separate from the existing WhatsApp overlays.
+    private var deviceAdminOverlayView: View? = null
+    private var deviceAdminOverlayRect: Rect? = null
 
     private var lastSnapshot = ""
     private var lastCaptureTime = 0L
@@ -148,14 +157,10 @@ class WhatsAppAccessibilityService : AccessibilityService() {
 
         val eventPackage = event.packageName?.toString()
 
-        // Diagnostic capture for Android Settings.
-        // This branch never runs WhatsApp blocking logic on Settings.
+        // Handle Android Settings separately from WhatsApp.
+        // The Device Admin overlay does not depend on diagnostic logging.
         if (eventPackage != "com.whatsapp") {
-            if (
-                eventPackage == "com.android.settings" &&
-                getSharedPreferences(PREFS_NAME, MODE_PRIVATE)
-                    .getBoolean(DIAGNOSTIC_MODE, false)
-            ) {
+            if (eventPackage == "com.android.settings") {
                 val root = rootInActiveWindow
 
                 if (root != null) {
@@ -163,17 +168,33 @@ class WhatsAppAccessibilityService : AccessibilityService() {
                         if (root.packageName?.toString() ==
                             "com.android.settings"
                         ) {
-                            captureScreen(event, root)
-                            lastCaptureStatus =
-                                "Captured Android Settings screen"
+                            updateDeviceAdminRowOverlay(root)
+
+                            if (
+                                getSharedPreferences(
+                                    PREFS_NAME,
+                                    MODE_PRIVATE
+                                ).getBoolean(DIAGNOSTIC_MODE, false)
+                            ) {
+                                captureScreen(event, root)
+                            }
+                        } else {
+                            removeDeviceAdminOverlay()
                         }
                     } catch (e: Exception) {
                         lastCaptureStatus =
-                            "Settings capture error: ${e.javaClass.simpleName}"
+                            "Settings processing error: " +
+                                e.javaClass.simpleName
+                        removeDeviceAdminOverlay()
                     } finally {
                         root.recycle()
                     }
+                } else {
+                    removeDeviceAdminOverlay()
                 }
+            } else {
+                // Leaving Settings removes the Device Admin overlay.
+                removeDeviceAdminOverlay()
             }
 
             if (event.eventType ==
@@ -181,8 +202,12 @@ class WhatsAppAccessibilityService : AccessibilityService() {
             ) {
                 removeAllOverlays()
             }
+
             return
         }
+
+        // WhatsApp events must never leave a Device Admin overlay behind.
+        removeDeviceAdminOverlay()
 
         rootRetryCount = 0
         handler.removeCallbacks(rootRetryRunnable)
@@ -265,6 +290,213 @@ class WhatsAppAccessibilityService : AccessibilityService() {
                 "Service error: ${e.javaClass.simpleName}"
         } finally {
             root.recycle()
+        }
+    }
+
+    // ---------------------------------------------------------------
+    // DEVICE ADMIN ROW OVERLAY
+    // ---------------------------------------------------------------
+
+    private fun updateDeviceAdminRowOverlay(
+        root: AccessibilityNodeInfo
+    ) {
+        val enabled = getSharedPreferences(
+            PREFS_NAME,
+            MODE_PRIVATE
+        ).getBoolean(OVERLAY_DEVICE_ADMIN_ROW, false)
+
+        if (!enabled) {
+            removeDeviceAdminOverlay()
+            return
+        }
+
+        // Require the actual Device admin apps list screen.
+        // This avoids covering the activation confirmation screen.
+        if (root.packageName?.toString() != "com.android.settings" ||
+            findLabelBounds(root, DEVICE_ADMIN_SCREEN_TITLE) == null
+        ) {
+            removeDeviceAdminOverlay()
+            return
+        }
+
+        val rowBounds = findDeviceAdminRowBounds(root)
+
+        if (rowBounds == null || rowBounds.isEmpty) {
+            removeDeviceAdminOverlay()
+            lastCaptureStatus =
+                "Device Admin test: app row not found on list screen"
+            return
+        }
+
+        val screenWidth = resources.displayMetrics.widthPixels
+        val screenHeight = resources.displayMetrics.heightPixels
+
+        val clipped = Rect(
+            rowBounds.left.coerceAtLeast(0),
+            rowBounds.top.coerceAtLeast(0),
+            rowBounds.right.coerceAtMost(screenWidth),
+            rowBounds.bottom.coerceAtMost(screenHeight)
+        )
+
+        if (clipped.width() <= 0 || clipped.height() <= 0) {
+            removeDeviceAdminOverlay()
+            return
+        }
+
+        setDeviceAdminOverlay(clipped)
+    }
+
+    private fun findDeviceAdminRowBounds(
+        node: AccessibilityNodeInfo
+    ): Rect? {
+        val text = node.text?.toString()?.trim().orEmpty()
+        val description =
+            node.contentDescription?.toString()?.trim().orEmpty()
+
+        if (text == DEVICE_ADMIN_APP_TITLE ||
+            description == DEVICE_ADMIN_APP_TITLE
+        ) {
+            val titleBounds = Rect()
+            node.getBoundsInScreen(titleBounds)
+
+            if (titleBounds.isEmpty) return null
+
+            val screenWidth = resources.displayMetrics.widthPixels
+            val minimumRowHeight = dp(48)
+            val maximumRowHeight = dp(180)
+
+            var current: AccessibilityNodeInfo? = node.parent
+            var bestBounds: Rect? = null
+            var bestArea = Long.MAX_VALUE
+            var depth = 0
+
+            // Walk up the accessibility tree to find an ancestor
+            // representing the whole row rather than just its title.
+            while (current != null && depth < 8) {
+                val ancestor = current
+                val ancestorBounds = Rect()
+                ancestor.getBoundsInScreen(ancestorBounds)
+
+                val containsTitle =
+                    ancestorBounds.contains(titleBounds.centerX(),
+                        titleBounds.centerY())
+
+                val rowLike =
+                    ancestorBounds.width() >= (screenWidth * 0.75f) &&
+                    ancestorBounds.height() >= minimumRowHeight &&
+                    ancestorBounds.height() <= maximumRowHeight &&
+                    containsTitle
+
+                if (rowLike) {
+                    val area =
+                        ancestorBounds.width().toLong() *
+                            ancestorBounds.height().toLong()
+
+                    if (area < bestArea) {
+                        bestArea = area
+                        bestBounds = Rect(ancestorBounds)
+                    }
+                }
+
+                val next = ancestor.parent
+                ancestor.recycle()
+                current = next
+                depth++
+            }
+
+            if (bestBounds != null) return bestBounds
+
+            // Fallback if Samsung's accessibility tree does not expose
+            // a suitable row container. Estimate the row from the title.
+            // These bounds are based on the live title location.
+            return Rect(
+                0,
+                (titleBounds.top - dp(8)).coerceAtLeast(0),
+                screenWidth,
+                (titleBounds.bottom + dp(36))
+                    .coerceAtMost(resources.displayMetrics.heightPixels)
+            )
+        }
+
+        for (i in 0 until node.childCount) {
+            val child = node.getChild(i) ?: continue
+            try {
+                val result = findDeviceAdminRowBounds(child)
+                if (result != null) return result
+            } finally {
+                child.recycle()
+            }
+        }
+
+        return null
+    }
+
+    private fun setDeviceAdminOverlay(bounds: Rect) {
+        if (bounds.width() <= 0 || bounds.height() <= 0) {
+            removeDeviceAdminOverlay()
+            return
+        }
+
+        if (deviceAdminOverlayView != null &&
+            deviceAdminOverlayRect == bounds
+        ) {
+            return
+        }
+
+        val windowManager =
+            getSystemService(WINDOW_SERVICE) as WindowManager
+
+        val view = deviceAdminOverlayView ?: View(this).apply {
+            // Opaque neutral cover that hides the app row visually.
+            background = ColorDrawable(Color.rgb(247, 247, 247))
+            importantForAccessibility =
+                View.IMPORTANT_FOR_ACCESSIBILITY_NO
+        }
+
+        val params = WindowManager.LayoutParams(
+            bounds.width(),
+            bounds.height(),
+            WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY,
+            WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
+                WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN or
+                WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE,
+            PixelFormat.TRANSLUCENT
+        ).apply {
+            gravity = Gravity.TOP or Gravity.START
+            x = bounds.left
+            y = bounds.top
+        }
+
+        try {
+            if (deviceAdminOverlayView == null) {
+                windowManager.addView(view, params)
+                deviceAdminOverlayView = view
+            } else {
+                windowManager.updateViewLayout(view, params)
+            }
+
+            deviceAdminOverlayRect = Rect(bounds)
+            lastCaptureStatus = "Device Admin row overlay active (test)"
+        } catch (e: Exception) {
+            lastCaptureStatus =
+                "Device Admin overlay error: ${e.javaClass.simpleName}"
+            removeDeviceAdminOverlay()
+        }
+    }
+
+    private fun removeDeviceAdminOverlay() {
+        val view = deviceAdminOverlayView
+        deviceAdminOverlayView = null
+        deviceAdminOverlayRect = null
+
+        if (view != null) {
+            try {
+                val windowManager =
+                    getSystemService(WINDOW_SERVICE) as WindowManager
+                windowManager.removeView(view)
+            } catch (_: Exception) {
+                // The system may already have removed the overlay.
+            }
         }
     }
 
@@ -883,6 +1115,7 @@ class WhatsAppAccessibilityService : AccessibilityService() {
 
     override fun onInterrupt() {
         removeAllOverlays()
+        removeDeviceAdminOverlay()
         lastCaptureStatus = "Accessibility service interrupted"
     }
 
@@ -892,6 +1125,7 @@ class WhatsAppAccessibilityService : AccessibilityService() {
         handler.removeCallbacks(backOutRunnable)
         handler.removeCallbacks(lockoutCountdownRunnable)
         removeAllOverlays()
+        removeDeviceAdminOverlay()
         super.onDestroy()
     }
 }
