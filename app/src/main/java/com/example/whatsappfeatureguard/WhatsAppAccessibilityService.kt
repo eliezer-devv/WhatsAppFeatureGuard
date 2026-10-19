@@ -72,7 +72,6 @@ class WhatsAppAccessibilityService : AccessibilityService() {
         }
     }
 
-    // Explicit type prevents Kotlin recursive type-inference errors.
     private lateinit var backOutRunnable: Runnable
 
     private val lockoutCountdownRunnable = Runnable {
@@ -106,7 +105,6 @@ class WhatsAppAccessibilityService : AccessibilityService() {
                 root?.recycle()
             }
 
-            // If another app is foregrounded, begin the lockout.
             if (foregroundPackage != null &&
                 foregroundPackage != "com.whatsapp"
             ) {
@@ -115,7 +113,6 @@ class WhatsAppAccessibilityService : AccessibilityService() {
                 return@Runnable
             }
 
-            // Continue pressing Back up to the configured limit.
             if (backPressCount < MAX_BACK_PRESSES) {
                 performGlobalAction(GLOBAL_ACTION_BACK)
                 backPressCount++
@@ -125,7 +122,6 @@ class WhatsAppAccessibilityService : AccessibilityService() {
                     BACK_PRESS_INTERVAL_MS
                 )
             } else {
-                // Safety fallback: leave WhatsApp and start lockout.
                 pendingLockoutReason = null
                 beginLockoutCountdown(reason)
             }
@@ -150,7 +146,36 @@ class WhatsAppAccessibilityService : AccessibilityService() {
     override fun onAccessibilityEvent(event: AccessibilityEvent?) {
         if (!serviceActive || event == null) return
 
-        if (event.packageName?.toString() != "com.whatsapp") {
+        val eventPackage = event.packageName?.toString()
+
+        // Diagnostic capture for Android Settings.
+        // This branch never runs WhatsApp blocking logic on Settings.
+        if (eventPackage != "com.whatsapp") {
+            if (
+                eventPackage == "com.android.settings" &&
+                getSharedPreferences(PREFS_NAME, MODE_PRIVATE)
+                    .getBoolean(DIAGNOSTIC_MODE, false)
+            ) {
+                val root = rootInActiveWindow
+
+                if (root != null) {
+                    try {
+                        if (root.packageName?.toString() ==
+                            "com.android.settings"
+                        ) {
+                            captureScreen(event, root)
+                            lastCaptureStatus =
+                                "Captured Android Settings screen"
+                        }
+                    } catch (e: Exception) {
+                        lastCaptureStatus =
+                            "Settings capture error: ${e.javaClass.simpleName}"
+                    } finally {
+                        root.recycle()
+                    }
+                }
+            }
+
             if (event.eventType ==
                 AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED
             ) {
@@ -266,7 +291,6 @@ class WhatsAppAccessibilityService : AccessibilityService() {
 
         lastCaptureStatus = "$reason opened; backing out of WhatsApp"
 
-        // First Back press.
         performGlobalAction(GLOBAL_ACTION_BACK)
         backPressCount++
 
@@ -405,7 +429,7 @@ class WhatsAppAccessibilityService : AccessibilityService() {
     }
 
     // ---------------------------------------------------------------
-    // OVERLAYS
+    // WHATSAPP OVERLAYS
     // ---------------------------------------------------------------
 
     private fun updateOverlays(
@@ -454,7 +478,11 @@ class WhatsAppAccessibilityService : AccessibilityService() {
                 .coerceAtMost(screenHeight)
 
             if (bottom > top) {
-                setOverlay("status", "Status hidden", Rect(left, top, right, bottom))
+                setOverlay(
+                    "status",
+                    "Status hidden",
+                    Rect(left, top, right, bottom)
+                )
             } else {
                 removeOverlay("status")
             }
@@ -470,7 +498,11 @@ class WhatsAppAccessibilityService : AccessibilityService() {
             val bottom = list.bottom.coerceAtMost(screenHeight)
 
             if (bottom > top) {
-                setOverlay("channels", "Channels hidden", Rect(left, top, right, bottom))
+                setOverlay(
+                    "channels",
+                    "Channels hidden",
+                    Rect(left, top, right, bottom)
+                )
             } else {
                 removeOverlay("channels")
             }
@@ -563,6 +595,10 @@ class WhatsAppAccessibilityService : AccessibilityService() {
         removeOverlay("channels")
     }
 
+    // ---------------------------------------------------------------
+    // ACCESSIBILITY NODE SEARCH
+    // ---------------------------------------------------------------
+
     private fun findViewIdBounds(
         node: AccessibilityNodeInfo,
         expected: String
@@ -623,7 +659,7 @@ class WhatsAppAccessibilityService : AccessibilityService() {
         (value * resources.displayMetrics.density).toInt()
 
     // ---------------------------------------------------------------
-    // FEATURE DETECTION
+    // WHATSAPP FEATURE DETECTION
     // ---------------------------------------------------------------
 
     private fun isStatusViewer(
