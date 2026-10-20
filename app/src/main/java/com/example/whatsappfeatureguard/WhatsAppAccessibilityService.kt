@@ -31,8 +31,6 @@ class WhatsAppAccessibilityService : AccessibilityService() {
         private const val BLOCK_CHANNELS = "block_channels"
         private const val OVERLAY_STATUS = "overlay_status"
         private const val OVERLAY_CHANNELS = "overlay_channels"
-        private const val OVERLAY_DEVICE_ADMIN_ROW =
-            "overlay_device_admin_row"
         private const val COOLDOWN_UNTIL = "cooldown_until"
         private const val LOG_FILE = "whatsapp_accessibility_log.txt"
 
@@ -61,10 +59,6 @@ class WhatsAppAccessibilityService : AccessibilityService() {
     private val handler = Handler(Looper.getMainLooper())
     private val overlayViews = mutableMapOf<String, TextView>()
     private val overlayRects = mutableMapOf<String, Rect>()
-
-    // Kept separate from the existing WhatsApp overlays.
-    private var deviceAdminOverlayView: View? = null
-    private var deviceAdminOverlayRect: Rect? = null
 
     private var lastSnapshot = ""
     private var lastCaptureTime = 0L
@@ -157,44 +151,33 @@ class WhatsAppAccessibilityService : AccessibilityService() {
 
         val eventPackage = event.packageName?.toString()
 
-        // Handle Android Settings separately from WhatsApp.
-        // The Device Admin overlay does not depend on diagnostic logging.
+        // Diagnostic capture for Android Settings.
+        // This does not cover, block, or modify Settings controls.
         if (eventPackage != "com.whatsapp") {
             if (eventPackage == "com.android.settings") {
-                val root = rootInActiveWindow
+                val diagnosticMode = getSharedPreferences(
+                    PREFS_NAME,
+                    MODE_PRIVATE
+                ).getBoolean(DIAGNOSTIC_MODE, false)
 
-                if (root != null) {
-                    try {
-                        if (root.packageName?.toString() ==
-                            "com.android.settings"
-                        ) {
-                            updateDeviceAdminRowOverlay(root)
+                if (diagnosticMode) {
+                    val root = rootInActiveWindow
 
-                            if (
-                                getSharedPreferences(
-                                    PREFS_NAME,
-                                    MODE_PRIVATE
-                                ).getBoolean(DIAGNOSTIC_MODE, false)
-                            ) {
-                                captureScreen(event, root)
-                            }
-                        } else {
-                            removeDeviceAdminOverlay()
+                    if (root != null) {
+                        try {
+                            captureScreen(event, root)
+                        } catch (e: Exception) {
+                            lastCaptureStatus =
+                                "Settings diagnostic error: " +
+                                    e.javaClass.simpleName
+                        } finally {
+                            root.recycle()
                         }
-                    } catch (e: Exception) {
+                    } else {
                         lastCaptureStatus =
-                            "Settings processing error: " +
-                                e.javaClass.simpleName
-                        removeDeviceAdminOverlay()
-                    } finally {
-                        root.recycle()
+                            "Settings event received, but root is null"
                     }
-                } else {
-                    removeDeviceAdminOverlay()
                 }
-            } else {
-                // Leaving Settings removes the Device Admin overlay.
-                removeDeviceAdminOverlay()
             }
 
             if (event.eventType ==
@@ -205,9 +188,6 @@ class WhatsAppAccessibilityService : AccessibilityService() {
 
             return
         }
-
-        // WhatsApp events must never leave a Device Admin overlay behind.
-        removeDeviceAdminOverlay()
 
         rootRetryCount = 0
         handler.removeCallbacks(rootRetryRunnable)
@@ -290,213 +270,6 @@ class WhatsAppAccessibilityService : AccessibilityService() {
                 "Service error: ${e.javaClass.simpleName}"
         } finally {
             root.recycle()
-        }
-    }
-
-    // ---------------------------------------------------------------
-    // DEVICE ADMIN ROW OVERLAY
-    // ---------------------------------------------------------------
-
-    private fun updateDeviceAdminRowOverlay(
-        root: AccessibilityNodeInfo
-    ) {
-        val enabled = getSharedPreferences(
-            PREFS_NAME,
-            MODE_PRIVATE
-        ).getBoolean(OVERLAY_DEVICE_ADMIN_ROW, false)
-
-        if (!enabled) {
-            removeDeviceAdminOverlay()
-            return
-        }
-
-        // Require the actual Device admin apps list screen.
-        // This avoids covering the activation confirmation screen.
-        if (root.packageName?.toString() != "com.android.settings" ||
-            findLabelBounds(root, DEVICE_ADMIN_SCREEN_TITLE) == null
-        ) {
-            removeDeviceAdminOverlay()
-            return
-        }
-
-        val rowBounds = findDeviceAdminRowBounds(root)
-
-        if (rowBounds == null || rowBounds.isEmpty) {
-            removeDeviceAdminOverlay()
-            lastCaptureStatus =
-                "Device Admin test: app row not found on list screen"
-            return
-        }
-
-        val screenWidth = resources.displayMetrics.widthPixels
-        val screenHeight = resources.displayMetrics.heightPixels
-
-        val clipped = Rect(
-            rowBounds.left.coerceAtLeast(0),
-            rowBounds.top.coerceAtLeast(0),
-            rowBounds.right.coerceAtMost(screenWidth),
-            rowBounds.bottom.coerceAtMost(screenHeight)
-        )
-
-        if (clipped.width() <= 0 || clipped.height() <= 0) {
-            removeDeviceAdminOverlay()
-            return
-        }
-
-        setDeviceAdminOverlay(clipped)
-    }
-
-    private fun findDeviceAdminRowBounds(
-        node: AccessibilityNodeInfo
-    ): Rect? {
-        val text = node.text?.toString()?.trim().orEmpty()
-        val description =
-            node.contentDescription?.toString()?.trim().orEmpty()
-
-        if (text == DEVICE_ADMIN_APP_TITLE ||
-            description == DEVICE_ADMIN_APP_TITLE
-        ) {
-            val titleBounds = Rect()
-            node.getBoundsInScreen(titleBounds)
-
-            if (titleBounds.isEmpty) return null
-
-            val screenWidth = resources.displayMetrics.widthPixels
-            val minimumRowHeight = dp(48)
-            val maximumRowHeight = dp(180)
-
-            var current: AccessibilityNodeInfo? = node.parent
-            var bestBounds: Rect? = null
-            var bestArea = Long.MAX_VALUE
-            var depth = 0
-
-            // Walk up the accessibility tree to find an ancestor
-            // representing the whole row rather than just its title.
-            while (current != null && depth < 8) {
-                val ancestor = current
-                val ancestorBounds = Rect()
-                ancestor.getBoundsInScreen(ancestorBounds)
-
-                val containsTitle =
-                    ancestorBounds.contains(titleBounds.centerX(),
-                        titleBounds.centerY())
-
-                val rowLike =
-                    ancestorBounds.width() >= (screenWidth * 0.75f) &&
-                    ancestorBounds.height() >= minimumRowHeight &&
-                    ancestorBounds.height() <= maximumRowHeight &&
-                    containsTitle
-
-                if (rowLike) {
-                    val area =
-                        ancestorBounds.width().toLong() *
-                            ancestorBounds.height().toLong()
-
-                    if (area < bestArea) {
-                        bestArea = area
-                        bestBounds = Rect(ancestorBounds)
-                    }
-                }
-
-                val next = ancestor.parent
-                ancestor.recycle()
-                current = next
-                depth++
-            }
-
-            if (bestBounds != null) return bestBounds
-
-            // Fallback if Samsung's accessibility tree does not expose
-            // a suitable row container. Estimate the row from the title.
-            // These bounds are based on the live title location.
-            return Rect(
-                0,
-                (titleBounds.top - dp(8)).coerceAtLeast(0),
-                screenWidth,
-                (titleBounds.bottom + dp(36))
-                    .coerceAtMost(resources.displayMetrics.heightPixels)
-            )
-        }
-
-        for (i in 0 until node.childCount) {
-            val child = node.getChild(i) ?: continue
-            try {
-                val result = findDeviceAdminRowBounds(child)
-                if (result != null) return result
-            } finally {
-                child.recycle()
-            }
-        }
-
-        return null
-    }
-
-    private fun setDeviceAdminOverlay(bounds: Rect) {
-        if (bounds.width() <= 0 || bounds.height() <= 0) {
-            removeDeviceAdminOverlay()
-            return
-        }
-
-        if (deviceAdminOverlayView != null &&
-            deviceAdminOverlayRect == bounds
-        ) {
-            return
-        }
-
-        val windowManager =
-            getSystemService(WINDOW_SERVICE) as WindowManager
-
-        val view = deviceAdminOverlayView ?: View(this).apply {
-            // Opaque neutral cover that hides the app row visually.
-            background = ColorDrawable(Color.rgb(247, 247, 247))
-            importantForAccessibility =
-                View.IMPORTANT_FOR_ACCESSIBILITY_NO
-        }
-
-        val params = WindowManager.LayoutParams(
-            bounds.width(),
-            bounds.height(),
-            WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY,
-            WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
-                WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN or
-                WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE,
-            PixelFormat.TRANSLUCENT
-        ).apply {
-            gravity = Gravity.TOP or Gravity.START
-            x = bounds.left
-            y = bounds.top
-        }
-
-        try {
-            if (deviceAdminOverlayView == null) {
-                windowManager.addView(view, params)
-                deviceAdminOverlayView = view
-            } else {
-                windowManager.updateViewLayout(view, params)
-            }
-
-            deviceAdminOverlayRect = Rect(bounds)
-            lastCaptureStatus = "Device Admin row overlay active (test)"
-        } catch (e: Exception) {
-            lastCaptureStatus =
-                "Device Admin overlay error: ${e.javaClass.simpleName}"
-            removeDeviceAdminOverlay()
-        }
-    }
-
-    private fun removeDeviceAdminOverlay() {
-        val view = deviceAdminOverlayView
-        deviceAdminOverlayView = null
-        deviceAdminOverlayRect = null
-
-        if (view != null) {
-            try {
-                val windowManager =
-                    getSystemService(WINDOW_SERVICE) as WindowManager
-                windowManager.removeView(view)
-            } catch (_: Exception) {
-                // The system may already have removed the overlay.
-            }
         }
     }
 
@@ -1002,6 +775,8 @@ class WhatsAppAccessibilityService : AccessibilityService() {
         root: AccessibilityNodeInfo
     ) {
         val now = System.currentTimeMillis()
+
+        // Keep the original rate limit for repeated events.
         if (now - lastCaptureTime < 400) return
 
         val output = StringBuilder()
@@ -1010,36 +785,94 @@ class WhatsAppAccessibilityService : AccessibilityService() {
             Locale.US
         ).format(Date(now))
 
+        val packageName = event.packageName?.toString() ?: "(null)"
+        val rootPackage = root.packageName?.toString() ?: "(null)"
+        val nodeCount = intArrayOf(0)
+        val appNameFound = booleanArrayOf(false)
+        val adminTitleFound = booleanArrayOf(false)
+
         output.appendLine()
         output.appendLine("==================================================")
-        output.appendLine("CAPTURE: $timestamp")
-        output.appendLine("PACKAGE: ${event.packageName}")
+        output.appendLine("DETAILED CAPTURE: $timestamp")
+        output.appendLine("PACKAGE: $packageName")
+        output.appendLine("ROOT_PACKAGE: $rootPackage")
+        output.appendLine("CLASS: ${clean(event.className)}")
         output.appendLine("EVENT_TYPE: ${eventTypeName(event.eventType)}")
-        output.appendLine("WINDOW_ID: ${root.windowId}")
+        output.appendLine("WINDOW_ID: ${event.windowId}")
+        output.appendLine("ROOT_WINDOW_ID: ${root.windowId}")
+        output.appendLine("CONTENT_CHANGE_TYPES: ${event.contentChangeTypes}")
+        output.appendLine("SOURCE_TEXT: ${clean(event.text.joinToString(" | "))}")
+        output.appendLine("ROOT_AVAILABLE: true")
         output.appendLine("==================================================")
 
-        val counter = intArrayOf(0)
-        appendNodeTree(root, output, 0, counter)
+        appendNodeTree(
+            node = root,
+            output = output,
+            depth = 0,
+            counter = nodeCount,
+            appNameFound = appNameFound,
+            adminTitleFound = adminTitleFound
+        )
+
+        output.appendLine()
+        output.appendLine("========== CAPTURE SUMMARY ==========")
+        output.appendLine("TOTAL_NODES: ${nodeCount[0]}")
+        output.appendLine("APP_NAME_FOUND: ${appNameFound[0]}")
+        output.appendLine("DEVICE_ADMIN_TITLE_FOUND: ${adminTitleFound[0]}")
+        output.appendLine("PACKAGE_IS_SETTINGS: ${packageName == "com.android.settings"}")
+        output.appendLine("=====================================")
 
         val snapshot = output.toString()
+
+        // Avoid writing identical consecutive trees, but allow the
+        // summary and event details to be refreshed when they change.
         if (snapshot == lastSnapshot) return
 
         appendToLog(snapshot)
         lastSnapshot = snapshot
         lastCaptureTime = now
+
         lastCaptureStatus =
-            "Captured ${counter[0]} UI elements at $timestamp"
+            "Captured ${nodeCount[0]} UI elements; " +
+                "appNameFound=${appNameFound[0]}; " +
+                "adminTitleFound=${adminTitleFound[0]}"
     }
 
     private fun appendNodeTree(
         node: AccessibilityNodeInfo,
         output: StringBuilder,
         depth: Int,
-        counter: IntArray
+        counter: IntArray,
+        appNameFound: BooleanArray,
+        adminTitleFound: BooleanArray
     ) {
         if (counter[0] >= MAX_NODES || depth > MAX_DEPTH) return
 
         counter[0]++
+
+        val text = node.text?.toString()
+        val description = node.contentDescription?.toString()
+        val viewId = try {
+            node.viewIdResourceName
+        } catch (_: Exception) {
+            null
+        }
+
+        val searchableText = listOfNotNull(text, description)
+
+        if (searchableText.any {
+                it.contains(DEVICE_ADMIN_APP_TITLE, ignoreCase = true)
+            }
+        ) {
+            appNameFound[0] = true
+        }
+
+        if (searchableText.any {
+                it.contains(DEVICE_ADMIN_SCREEN_TITLE, ignoreCase = true)
+            }
+        ) {
+            adminTitleFound[0] = true
+        }
 
         val indent = "  ".repeat(depth.coerceAtMost(MAX_DEPTH))
         val bounds = Rect()
@@ -1048,13 +881,11 @@ class WhatsAppAccessibilityService : AccessibilityService() {
         output.append(indent).append("NODE ")
             .append(counter[0]).appendLine()
         output.append(indent).appendLine("  class=${clean(node.className)}")
-        output.append(indent).appendLine("  text=${clean(node.text)}")
+        output.append(indent).appendLine("  text=${clean(text)}")
         output.append(indent).appendLine(
-            "  contentDescription=${clean(node.contentDescription)}"
+            "  contentDescription=${clean(description)}"
         )
-        output.append(indent).appendLine(
-            "  viewId=${clean(node.viewIdResourceName)}"
-        )
+        output.append(indent).appendLine("  viewId=${clean(viewId)}")
         output.append(indent).appendLine("  clickable=${node.isClickable}")
         output.append(indent).appendLine("  selected=${node.isSelected}")
         output.append(indent).appendLine("  checkable=${node.isCheckable}")
@@ -1063,14 +894,38 @@ class WhatsAppAccessibilityService : AccessibilityService() {
         output.append(indent).appendLine("  focusable=${node.isFocusable}")
         output.append(indent).appendLine("  focused=${node.isFocused}")
         output.append(indent).appendLine("  scrollable=${node.isScrollable}")
+        output.append(indent).appendLine("  childCount=${node.childCount}")
         output.append(indent).appendLine("  bounds=$bounds")
 
         for (i in 0 until node.childCount) {
-            if (counter[0] >= MAX_NODES) break
+            if (counter[0] >= MAX_NODES) {
+                output.appendLine("${indent}  [MAX_NODES reached]")
+                break
+            }
 
-            val child = node.getChild(i) ?: continue
+            val child = try {
+                node.getChild(i)
+            } catch (e: Exception) {
+                output.appendLine(
+                    "${indent}  CHILD $i ERROR: ${e.javaClass.simpleName}"
+                )
+                null
+            } ?: continue
+
             try {
-                appendNodeTree(child, output, depth + 1, counter)
+                appendNodeTree(
+                    node = child,
+                    output = output,
+                    depth = depth + 1,
+                    counter = counter,
+                    appNameFound = appNameFound,
+                    adminTitleFound = adminTitleFound
+                )
+            } catch (e: Exception) {
+                output.appendLine(
+                    "${indent}  CHILD $i ERROR: " +
+                        "${e.javaClass.simpleName}: ${e.message}"
+                )
             } finally {
                 child.recycle()
             }
@@ -1080,13 +935,19 @@ class WhatsAppAccessibilityService : AccessibilityService() {
     private fun appendToLog(content: String) {
         val file = File(filesDir, LOG_FILE)
 
-        if (file.exists() && file.length() > MAX_LOG_BYTES) {
-            file.writeText(
-                "Older diagnostic captures were cleared because the log reached its size limit.\n"
-            )
-        }
+        try {
+            if (file.exists() && file.length() > MAX_LOG_BYTES) {
+                file.writeText(
+                    "Older diagnostic captures were cleared because " +
+                        "the log reached its size limit.\n"
+                )
+            }
 
-        file.appendText(content + "\n")
+            file.appendText(content + "\n")
+        } catch (e: Exception) {
+            lastCaptureStatus =
+                "Log write failed: ${e.javaClass.simpleName}: ${e.message}"
+        }
     }
 
     private fun clean(value: CharSequence?): String {
@@ -1103,19 +964,51 @@ class WhatsAppAccessibilityService : AccessibilityService() {
         return when (type) {
             AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED ->
                 "WINDOW_STATE_CHANGED"
+
             AccessibilityEvent.TYPE_WINDOW_CONTENT_CHANGED ->
                 "WINDOW_CONTENT_CHANGED"
-            AccessibilityEvent.TYPE_VIEW_SELECTED -> "VIEW_SELECTED"
-            AccessibilityEvent.TYPE_VIEW_CLICKED -> "VIEW_CLICKED"
-            AccessibilityEvent.TYPE_VIEW_FOCUSED -> "VIEW_FOCUSED"
-            AccessibilityEvent.TYPE_VIEW_SCROLLED -> "VIEW_SCROLLED"
+
+            AccessibilityEvent.TYPE_VIEW_SELECTED ->
+                "VIEW_SELECTED"
+
+            AccessibilityEvent.TYPE_VIEW_CLICKED ->
+                "VIEW_CLICKED"
+
+            AccessibilityEvent.TYPE_VIEW_FOCUSED ->
+                "VIEW_FOCUSED"
+
+            AccessibilityEvent.TYPE_VIEW_SCROLLED ->
+                "VIEW_SCROLLED"
+
+            AccessibilityEvent.TYPE_WINDOWS_CHANGED ->
+                "WINDOWS_CHANGED"
+
             else -> "OTHER($type)"
+        }
+    }
+
+    private fun removeAllOverlays() {
+        removeOverlay("status")
+        removeOverlay("channels")
+    }
+
+    private fun removeOverlay(key: String) {
+        val view = overlayViews.remove(key)
+        overlayRects.remove(key)
+
+        if (view != null) {
+            try {
+                val windowManager =
+                    getSystemService(WINDOW_SERVICE) as WindowManager
+                windowManager.removeView(view)
+            } catch (_: Exception) {
+                // Android may already have removed the view.
+            }
         }
     }
 
     override fun onInterrupt() {
         removeAllOverlays()
-        removeDeviceAdminOverlay()
         lastCaptureStatus = "Accessibility service interrupted"
     }
 
@@ -1125,7 +1018,6 @@ class WhatsAppAccessibilityService : AccessibilityService() {
         handler.removeCallbacks(backOutRunnable)
         handler.removeCallbacks(lockoutCountdownRunnable)
         removeAllOverlays()
-        removeDeviceAdminOverlay()
         super.onDestroy()
     }
 }
