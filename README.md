@@ -1,20 +1,31 @@
 # WhatsApp Feature Guard
 
-This repository builds two APK variants from one codebase using GitHub Actions.
+This repository builds two APK variants from the same codebase.
 
-## APK variants
+- **Channels Only**: blocks WhatsApp Channels and overlays the Channels area; Status remains accessible.
+- **Status + Channels**: blocks both WhatsApp Status and Channels and overlays both areas.
 
-- **Channels Only** (`app-channelsOnly-debug.apk`): blocks Channels and displays the Channels overlay. Status remains accessible.
-- **Status + Channels** (`app-statusAndChannels-debug.apk`): blocks both Status and Channels and displays both overlays.
+Both variants intentionally use the same application ID, so only one can be installed at a time. Installing the other variant replaces/updates the first rather than allowing both to coexist.
 
-Both variants hide the normal launcher icon. This does not start or enable the Accessibility Service automatically. After installing, enable **WhatsApp Feature Guard** under Android Settings → Accessibility (the exact menu name may vary).
+## Build and install
 
-## Important installation note
+GitHub Actions builds both debug APKs on each push to `main` or when manually started. Download them from the workflow run's artifacts or the GitHub Release.
 
-Both variants intentionally use the same Android application ID so either variant can update the same installed app. You cannot install both variants side-by-side on one phone; installing one over the other replaces the installed variant (assuming the APK signing key matches).
+After installing, open **WhatsApp Feature Guard** and tap **Set up / enable Accessibility**. In Android Accessibility settings, open the installed service and enable it. Return to the app and tap **Refresh status**.
 
-## Builds
+## Background reliability and recovery
 
-Every push to `main`, and manual workflow runs, build both APKs. Download them from the workflow run's **Artifacts**, or from the latest GitHub Release.
+The setup screen reports:
 
-The app's Status/Channels mode is fixed by the APK variant. The MainActivity remains in the package for troubleshooting, but it has no launcher icon. Existing blocking logic, WhatsApp overlays, 10-second cooldown, redirect behavior, and diagnostic logging are retained.
+- whether the accessibility service is enabled in Android settings;
+- whether the service is currently connected to the system;
+- whether Android's battery-optimization exemption is active;
+- the latest service status and diagnostic log size.
+
+Use **Request battery-optimization exemption** and approve the Android prompt. On Samsung devices, also open **Open app battery settings (choose Unrestricted)**, then select **Battery → Unrestricted** if that option is available. These settings reduce the chance of Android restricting background operation but cannot guarantee the service will never be stopped.
+
+An ordinary standalone APK cannot silently turn its own accessibility service back on if Android or the user disables it. The user must return to Accessibility settings and re-enable it. The app therefore keeps a launcher icon so the setup screen remains easy to reopen for initial setup and recovery. Hiding the icon would make that recovery much harder without an MDM or a separate trusted launch mechanism.
+
+## Version 0.4.0
+
+This version adds the accessibility setup button, battery-exemption request, shortcut to app battery settings, and live diagnostic indicators. Existing Status/Channels blocking, overlays, redirects, cooldown, and notification behavior are intended to remain unchanged.
