@@ -51,6 +51,10 @@ companion object {
     @Volatile
     var isServiceConnected: Boolean = false
         private set
+
+    @Volatile
+    var lastDetectionSummary: String = "No WhatsApp screen analyzed yet"
+        private set
 }
 
 private val handler = Handler(Looper.getMainLooper())
@@ -58,6 +62,7 @@ private val overlayViews = mutableMapOf<String, TextView>()
 private val overlayRects = mutableMapOf<String, Rect>()
 
 private var lastSnapshot = ""
+private var lastLoggedDetectionSummary = ""
 private var lastCaptureTime = 0L
 private var rootRetryCount = 0
 private var serviceActive = false
@@ -250,14 +255,31 @@ private fun processCurrentWindow(
             return
         }
 
-        if (diagnosticMode && event != null) {
-            captureScreen(event, root)
-        }
+        val statusViewerDetected = isStatusViewer(root)
+        val channelsScreenDetected = isChannelsScreen(root)
+        val updatesListBounds = findUpdatesListBounds(root)
+        val channelsHeadingBounds = findChannelsHeadingBounds(root)
 
         updateOverlays(root, overlayStatus, overlayChannels)
 
-        val statusViewer = blockStatus && isStatusViewer(root)
-        val channelsScreen = blockChannels && isChannelsScreen(root)
+        lastDetectionSummary = buildString {
+            append("Status viewer: ").append(if (statusViewerDetected) "MATCH" else "no match")
+            append("; Channels screen: ").append(if (channelsScreenDetected) "MATCH" else "no match")
+            append("; Updates list bounds: ").append(if (updatesListBounds != null) "found" else "not found")
+            append("; Channels heading bounds: ").append(if (channelsHeadingBounds != null) "found" else "not found")
+            append("; Status overlay shown: ").append(overlayRects.containsKey("status"))
+            append("; Channels overlay shown: ").append(overlayRects.containsKey("channels"))
+            append("; blocking enabled: Status=").append(blockStatus)
+            append(", Channels=").append(blockChannels)
+        }
+        if (diagnosticMode && lastDetectionSummary != lastLoggedDetectionSummary) {
+            appendToLog("\n[DETECTION ${Date()}] $lastDetectionSummary\n")
+            lastLoggedDetectionSummary = lastDetectionSummary
+        }
+        if (diagnosticMode && event != null) captureScreen(event, root)
+
+        val statusViewer = blockStatus && statusViewerDetected
+        val channelsScreen = blockChannels && channelsScreenDetected
 
         if (statusViewer || channelsScreen) {
             val reason = if (statusViewer) "Status" else "Channels"
@@ -441,13 +463,8 @@ private fun updateOverlays(
     overlayStatus: Boolean,
     overlayChannels: Boolean
 ) {
-    val updatesList = findViewIdBounds(root, "updates_list")
-    val channelsHeading = findLabelBounds(root, "Channels")
-    val followChannel =
-        findLabelBounds(root, "FOLLOW CHANNEL")
-            ?: findLabelBounds(root, "Follow channel")
-
-    val channelsStart = channelsHeading ?: followChannel
+    val updatesList = findUpdatesListBounds(root)
+    val channelsStart = findChannelsHeadingBounds(root)
 
     val onUpdatesList =
         updatesList != null &&
@@ -666,53 +683,90 @@ private fun dp(value: Int): Int =
 // WHATSAPP FEATURE DETECTION
 // ---------------------------------------------------------------
 
-private fun isStatusViewer(
-    root: AccessibilityNodeInfo
-): Boolean {
-    return containsViewId(root, "playback_progress") ||
+private fun isStatusViewer(root: AccessibilityNodeInfo): Boolean {
+    // Use stable IDs when available, plus a flexible counter matcher. The
+    // counter no longer assumes WhatsApp only displays Status 1 through 4.
+    if (containsViewId(root, "playback_progress") ||
         containsViewId(root, "status_playback_image") ||
-        containsText(root, "Status 1 of") ||
-        containsText(root, "Status 2 of") ||
-        containsText(root, "Status 3 of") ||
-        containsText(root, "Status 4 of")
+        containsTextMatching(root, Regex("\\bstatus\\s+\\d+\\s+of\\s+\\d+\\b", RegexOption.IGNORE_CASE))
+    ) return true
+
+    // Fallback for UI revisions that remove the counter but expose status-viewer
+    // actions. Require multiple clues to reduce false positives in normal chats.
+    val replyAction = containsText(root, "Reply privately") ||
+        containsText(root, "Reply to status")
+    val statusAction = containsText(root, "Mute status") ||
+        containsText(root, "Pause status") ||
+        containsText(root, "View status")
+    return replyAction && statusAction
 }
 
-private fun isChannelsScreen(
-    root: AccessibilityNodeInfo
-): Boolean {
-    if (containsViewId(root, "updates_list")) return false
+private fun isChannelsScreen(root: AccessibilityNodeInfo): Boolean {
+    if (findUpdatesListBounds(root) != null) return false
 
-    return isChannelsDiscoveryScreen(root) ||
-        containsViewId(root, "newsletter_directory_row_container") ||
+    val directoryIds = containsViewId(root, "newsletter_directory_row_container") ||
         containsViewId(root, "newsletter_name") ||
-        containsText(root, "FOLLOW CHANNEL") ||
+        containsViewId(root, "directory_category_list")
+    val channelActions = containsText(root, "FOLLOW CHANNEL") ||
         containsText(root, "Follow channel") ||
         containsText(root, "Find channels") ||
-        containsText(root, "Discover channels")
+        containsText(root, "Discover channels") ||
+        containsText(root, "Search channels")
+    return directoryIds || channelActions || isChannelsDiscoveryScreen(root)
 }
 
-private fun isChannelsDiscoveryScreen(
-    root: AccessibilityNodeInfo
-): Boolean {
-    if (containsViewId(root, "updates_list")) return false
+private fun isChannelsDiscoveryScreen(root: AccessibilityNodeInfo): Boolean {
+    if (findUpdatesListBounds(root) != null) return false
+    if (containsViewId(root, "directory_category_list")) return true
 
-    if (containsViewId(root, "directory_category_list")) {
-        return true
-    }
-
-    val exploreHeading =
-        containsText(root, "Explore channels") ||
-            containsText(root, "Explore")
-
-    val discoveryContent =
-        containsText(root, "Recommended") ||
-            containsText(root, "Popular") ||
-            containsText(root, "Verified") ||
-            containsText(root, "Search channels") ||
-            containsText(root, "Find channels") ||
-            containsText(root, "Discover channels")
-
+    val exploreHeading = containsText(root, "Explore channels") ||
+        containsText(root, "Explore")
+    val discoveryContent = containsText(root, "Recommended") ||
+        containsText(root, "Popular") ||
+        containsText(root, "Verified") ||
+        containsText(root, "Search channels") ||
+        containsText(root, "Find channels") ||
+        containsText(root, "Discover channels")
     return exploreHeading && discoveryContent
+}
+
+private fun findUpdatesListBounds(root: AccessibilityNodeInfo): Rect? {
+    val ids = listOf("updates_list", "updates_list_container", "status_updates_list")
+    for (id in ids) {
+        val bounds = findViewIdBounds(root, id)
+        if (bounds != null) return bounds
+    }
+    return null
+}
+
+private fun findChannelsHeadingBounds(root: AccessibilityNodeInfo): Rect? {
+    val labels = listOf(
+        "Channels", "FOLLOW CHANNEL", "Follow channel",
+        "Find channels", "Discover channels", "Explore channels"
+    )
+    for (label in labels) {
+        val bounds = findLabelBounds(root, label)
+        if (bounds != null) return bounds
+    }
+    return null
+}
+
+private fun containsTextMatching(
+    node: AccessibilityNodeInfo,
+    regex: Regex
+): Boolean {
+    if (regex.containsMatchIn(node.text?.toString().orEmpty()) ||
+        regex.containsMatchIn(node.contentDescription?.toString().orEmpty())
+    ) return true
+    for (i in 0 until node.childCount) {
+        val child = node.getChild(i) ?: continue
+        try {
+            if (containsTextMatching(child, regex)) return true
+        } finally {
+            child.recycle()
+        }
+    }
+    return false
 }
 
 private fun containsText(
@@ -812,6 +866,7 @@ private fun captureScreen(
     output.appendLine()
     output.appendLine("========== CAPTURE SUMMARY ==========")
     output.appendLine("TOTAL_NODES: ${nodeCount[0]}")
+    output.appendLine("DETECTION_SUMMARY: $lastDetectionSummary")
     output.appendLine("PACKAGE_IS_SETTINGS: ${packageName == "com.android.settings"}")
     output.appendLine("=====================================")
 

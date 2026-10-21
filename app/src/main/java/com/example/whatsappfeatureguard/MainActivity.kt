@@ -142,14 +142,7 @@ class MainActivity : Activity() {
         }
 
         addButton(outer, "Open WhatsApp") {
-            val launchIntent =
-                packageManager.getLaunchIntentForPackage("com.whatsapp")
-
-            if (launchIntent != null) {
-                startActivity(launchIntent)
-            } else {
-                toast("WhatsApp was not found.")
-            }
+            openWhatsApp()
         }
 
         addButton(outer, "Share diagnostic log") {
@@ -165,6 +158,41 @@ class MainActivity : Activity() {
         }
 
         setContentView(scroll)
+    }
+
+    private fun openWhatsApp() {
+        val whatsappPackage = "com.whatsapp"
+        try {
+            val launchIntent = packageManager.getLaunchIntentForPackage(whatsappPackage)
+            if (launchIntent != null) {
+                startActivity(launchIntent)
+                return
+            }
+        } catch (_: Exception) {
+            // Try resolving the launcher activity explicitly below.
+        }
+
+        try {
+            val intent = Intent(Intent.ACTION_MAIN).apply {
+                addCategory(Intent.CATEGORY_LAUNCHER)
+                setPackage(whatsappPackage)
+            }
+            val resolved = packageManager.queryIntentActivities(
+                intent, PackageManager.MATCH_DEFAULT_ONLY
+            ).firstOrNull()
+            if (resolved != null) {
+                intent.component = android.content.ComponentName(
+                    resolved.activityInfo.packageName,
+                    resolved.activityInfo.name
+                )
+                startActivity(intent)
+                return
+            }
+        } catch (_: Exception) {
+            // Show a useful error instead of crashing the setup screen.
+        }
+
+        toast("Couldn't open WhatsApp. Check that the official WhatsApp app is installed and enabled.")
     }
 
     private fun saveSetting(key: String, value: Boolean) {
@@ -213,6 +241,9 @@ class MainActivity : Activity() {
             appendLine()
             appendLine("Latest service status:")
             appendLine(WhatsAppAccessibilityService.lastCaptureStatus)
+            appendLine()
+            appendLine("Latest detection report:")
+            appendLine(WhatsAppAccessibilityService.lastDetectionSummary)
             appendLine()
             append("Saved log size: ${logFile().length()} bytes")
         }

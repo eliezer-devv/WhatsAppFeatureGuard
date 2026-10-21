@@ -26,6 +26,9 @@ Use **Request battery-optimization exemption** and approve the Android prompt. O
 
 An ordinary standalone APK cannot silently turn its own accessibility service back on if Android or the user disables it. The user must return to Accessibility settings and re-enable it. The app therefore keeps a launcher icon so the setup screen remains easy to reopen for initial setup and recovery. Hiding the icon would make that recovery much harder without an MDM or a separate trusted launch mechanism.
 
-## Version 0.4.0
+## Version 0.5.0
 
 This version adds the accessibility setup button, battery-exemption request, shortcut to app battery settings, and live diagnostic indicators. Existing Status/Channels blocking, overlays, redirects, cooldown, and notification behavior are intended to remain unchanged.
+
+
+Version 0.5.0 adds a custom launcher icon, a more reliable Open WhatsApp button with package-visibility support, flexible Status viewer counter detection, alternative known IDs/labels for the Updates list and Channels heading, and a latest detection report in the setup screen and diagnostic log.
