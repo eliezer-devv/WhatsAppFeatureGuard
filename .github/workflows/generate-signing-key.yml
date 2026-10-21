@@ -1,0 +1,31 @@
+name: Generate Signing Key (One Time)
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  generate-key:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Generate permanent signing key
+        run: |
+          keytool -genkeypair \
+            -keystore wfg-signing.jks \
+            -storepass "${{ secrets.WFG_KEYSTORE_PASSWORD }}" \
+            -keypass "${{ secrets.WFG_KEY_PASSWORD }}" \
+            -alias whatsappfeatureguard \
+            -keyalg RSA \
+            -keysize 2048 \
+            -validity 10000 \
+            -dname "CN=WhatsApp Feature Guard, OU=Android, O=Personal, L=Unknown, ST=Unknown, C=IL"
+
+      - name: Upload signing key
+        uses: actions/upload-artifact@v4
+        with:
+          name: wfg-signing-key
+          path: wfg-signing.jks
+          retention-days: 1
