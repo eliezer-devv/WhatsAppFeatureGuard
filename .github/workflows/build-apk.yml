@@ -31,6 +31,56 @@ jobs:
       - name: Build both APK variants
         run: gradle assembleChannelsOnlyDebug assembleStatusAndChannelsDebug --stacktrace
 
+      - name: Sign both APKs with permanent key
+        env:
+          KEYSTORE_BASE64: ${{ secrets.WFG_KEYSTORE_BASE64 }}
+          KEYSTORE_PASSWORD: ${{ secrets.WFG_KEYSTORE_PASSWORD }}
+          KEY_PASSWORD: ${{ secrets.WFG_KEY_PASSWORD }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          if [[ -z "$KEYSTORE_BASE64" || -z "$KEYSTORE_PASSWORD" || -z "$KEY_PASSWORD" ]]; then
+            echo "ERROR: One or more signing secrets are missing."
+            exit 1
+          fi
+
+          SDK_ROOT="${ANDROID_HOME:-${ANDROID_SDK_ROOT:-/usr/local/lib/android/sdk}}"
+          APKSIGNER="$(find "$SDK_ROOT/build-tools" -type f -name apksigner 2>/dev/null | sort -V | tail -n 1)"
+
+          if [[ -z "$APKSIGNER" || ! -x "$APKSIGNER" ]]; then
+            echo "ERROR: Android apksigner was not found."
+            exit 1
+          fi
+
+          KEYSTORE_PATH="$RUNNER_TEMP/wfg-signing.jks"
+          printf '%s' "$KEYSTORE_BASE64" | base64 --decode > "$KEYSTORE_PATH"
+          trap 'rm -f "$KEYSTORE_PATH"' EXIT
+
+          APK_FILES=(
+            app/build/outputs/apk/channelsOnly/debug/app-channelsOnly-debug.apk
+            app/build/outputs/apk/statusAndChannels/debug/app-statusAndChannels-debug.apk
+          )
+
+          for APK in "${APK_FILES[@]}"; do
+            if [[ ! -f "$APK" ]]; then
+              echo "ERROR: Expected APK not found: $APK"
+              exit 1
+            fi
+
+            "$APKSIGNER" sign \
+              --ks "$KEYSTORE_PATH" \
+              --ks-key-alias whatsappfeatureguard \
+              --ks-pass env:KEYSTORE_PASSWORD \
+              --key-pass env:KEY_PASSWORD \
+              --out "$APK.signed" \
+              "$APK"
+
+            mv "$APK.signed" "$APK"
+            "$APKSIGNER" verify --verbose "$APK"
+            echo "Successfully signed and verified: $APK"
+          done
+
       - name: Upload both APKs as workflow artifacts
         uses: actions/upload-artifact@v4
         with:
