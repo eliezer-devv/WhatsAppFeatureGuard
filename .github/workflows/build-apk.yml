@@ -52,7 +52,7 @@ jobs:
             - app-channelsOnly-debug.apk: Channels blocked; Status remains accessible.
             - app-statusAndChannels-debug.apk: Status and Channels blocked.
 
-            Both builds have no launcher icon. Enable the Accessibility Service in Android Settings before use.
+            The launcher icon is visible for standalone setup and recovery. Enable Accessibility in the app setup screen. Request the battery-optimization exemption and choose Unrestricted under App info → Battery where available. Android does not permit silent self-reactivation of Accessibility.
           prerelease: true
           make_latest: false
           files: |
