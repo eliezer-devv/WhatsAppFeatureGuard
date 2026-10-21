@@ -72,7 +72,7 @@ jobs:
               --ks "$KEYSTORE_PATH" \
               --ks-key-alias whatsappfeatureguard \
               --ks-pass env:KEYSTORE_PASSWORD \
-              --key-pass env:KEY_PASSWORD \
+              --key-pass env:KEYSTORE_PASSWORD \
               --out "$APK.signed" \
               "$APK"
 
