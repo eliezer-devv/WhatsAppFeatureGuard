@@ -32,7 +32,6 @@ class MainActivity : Activity() {
         private const val BLOCK_CHANNELS = "block_channels"
         private const val OVERLAY_STATUS = "overlay_status"
         private const val OVERLAY_CHANNELS = "overlay_channels"
-        private const val OVERLAY_DEVICE_ADMIN_ROW = "overlay_device_admin_row"
         private const val COOLDOWN_UNTIL = "cooldown_until"
         private const val LOG_FILE = "whatsapp_accessibility_log.txt"
         private const val REQUEST_NOTIFICATIONS = 1001
@@ -44,8 +43,7 @@ class MainActivity : Activity() {
     private lateinit var channelsCheckBox: CheckBox
     private lateinit var overlayStatusCheckBox: CheckBox
     private lateinit var overlayChannelsCheckBox: CheckBox
-    private lateinit var deviceAdminOverlayCheckBox: CheckBox
-
+    
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
 
@@ -158,37 +156,6 @@ class MainActivity : Activity() {
         }
         outer.addView(overlayChannelsCheckBox, matchWrap())
 
-        val deviceAdminHeading = TextView(this).apply {
-            text = "Device Admin screen test"
-            textSize = 19f
-            setTypeface(null, Typeface.BOLD)
-            setTextColor(0xFF202020.toInt())
-            setPadding(0, dp(18), 0, dp(4))
-        }
-        outer.addView(deviceAdminHeading, matchWrap())
-
-        val deviceAdminExplanation = TextView(this).apply {
-            text = "When enabled, the accessibility service will attempt " +
-                "to cover this app's row on the Device admin apps screen. " +
-                "The overlay is intended to let touches pass through to Settings. " +
-                "Use this toggle to turn the test off."
-            textSize = 14f
-            setTextColor(0xFF444444.toInt())
-            setPadding(0, dp(2), 0, dp(8))
-        }
-        outer.addView(deviceAdminExplanation, matchWrap())
-
-        deviceAdminOverlayCheckBox = CheckBox(this).apply {
-            text = "Overlay my Device Admin row (test)"
-            textSize = 17f
-            isChecked = getSetting(OVERLAY_DEVICE_ADMIN_ROW)
-            setOnCheckedChangeListener { _, checked ->
-                saveSetting(OVERLAY_DEVICE_ADMIN_ROW, checked)
-                refreshStatus()
-            }
-        }
-        outer.addView(deviceAdminOverlayCheckBox, matchWrap())
-
         statusText = TextView(this).apply {
             textSize = 15f
             setTextColor(0xFF222222.toInt())
@@ -281,8 +248,6 @@ class MainActivity : Activity() {
                 if (prefs.getBoolean(OVERLAY_STATUS, false)) "ON" else "OFF")
             appendLine("Overlay Channels: " +
                 if (prefs.getBoolean(OVERLAY_CHANNELS, false)) "ON" else "OFF")
-            appendLine("Device Admin row overlay: " +
-                if (prefs.getBoolean(OVERLAY_DEVICE_ADMIN_ROW, false)) "ON" else "OFF")
             appendLine("Diagnostic logging: " +
                 if (diagnosticEnabled) "ON" else "OFF")
             appendLine("Cooldown remaining: ${remainingSeconds}s")
