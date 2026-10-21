@@ -15,7 +15,6 @@ import android.graphics.Typeface
 import android.view.Gravity
 import android.view.ViewGroup
 import android.widget.Button
-import android.widget.CheckBox
 import android.widget.LinearLayout
 import android.widget.ScrollView
 import android.widget.TextView
@@ -28,10 +27,6 @@ class MainActivity : Activity() {
     companion object {
         private const val PREFS_NAME = "feature_guard_settings"
         private const val DIAGNOSTIC_MODE = "diagnostic_mode"
-        private const val BLOCK_STATUS = "block_status"
-        private const val BLOCK_CHANNELS = "block_channels"
-        private const val OVERLAY_STATUS = "overlay_status"
-        private const val OVERLAY_CHANNELS = "overlay_channels"
         private const val COOLDOWN_UNTIL = "cooldown_until"
         private const val LOG_FILE = "whatsapp_accessibility_log.txt"
         private const val REQUEST_NOTIFICATIONS = 1001
@@ -39,10 +34,6 @@ class MainActivity : Activity() {
 
     private lateinit var statusText: TextView
     private lateinit var diagnosticText: TextView
-    private lateinit var statusCheckBox: CheckBox
-    private lateinit var channelsCheckBox: CheckBox
-    private lateinit var overlayStatusCheckBox: CheckBox
-    private lateinit var overlayChannelsCheckBox: CheckBox
     
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -86,7 +77,7 @@ class MainActivity : Activity() {
         outer.addView(title, matchWrap())
 
         val explanation = TextView(this).apply {
-            text = "Choose which WhatsApp features to block or cover. " +
+            text = "This build has a fixed feature configuration. " +
                 "The accessibility service must be enabled in Android Settings."
             textSize = 16f
             setTextColor(0xFF333333.toInt())
@@ -94,67 +85,17 @@ class MainActivity : Activity() {
         }
         outer.addView(explanation, matchWrap())
 
-        statusCheckBox = CheckBox(this).apply {
-            text = "Block Status"
-            textSize = 17f
-            isChecked = getSetting(BLOCK_STATUS)
-            setOnCheckedChangeListener { _, checked ->
-                saveSetting(BLOCK_STATUS, checked)
-                refreshStatus()
+        val featureMode = TextView(this).apply {
+            text = if (BuildConfig.BLOCK_STATUS) {
+                "Build mode: Status and Channels blocked, with both overlays."
+            } else {
+                "Build mode: Channels blocked, with the Channels overlay. Status remains accessible."
             }
+            textSize = 16f
+            setTextColor(0xFF333333.toInt())
+            setPadding(0, dp(8), 0, dp(16))
         }
-        outer.addView(statusCheckBox, matchWrap())
-
-        channelsCheckBox = CheckBox(this).apply {
-            text = "Block Channels"
-            textSize = 17f
-            isChecked = getSetting(BLOCK_CHANNELS)
-            setOnCheckedChangeListener { _, checked ->
-                saveSetting(BLOCK_CHANNELS, checked)
-                refreshStatus()
-            }
-        }
-        outer.addView(channelsCheckBox, matchWrap())
-
-        val overlayHeading = TextView(this).apply {
-            text = "Updates tab overlays"
-            textSize = 19f
-            setTypeface(null, Typeface.BOLD)
-            setTextColor(0xFF202020.toInt())
-            setPadding(0, dp(18), 0, dp(4))
-        }
-        outer.addView(overlayHeading, matchWrap())
-
-        val overlayExplanation = TextView(this).apply {
-            text = "Cover the Status and Channels sections on WhatsApp's " +
-                "Updates tab. These settings are independent of the block switches."
-            textSize = 14f
-            setTextColor(0xFF444444.toInt())
-            setPadding(0, dp(2), 0, dp(8))
-        }
-        outer.addView(overlayExplanation, matchWrap())
-
-        overlayStatusCheckBox = CheckBox(this).apply {
-            text = "Overlay Status"
-            textSize = 17f
-            isChecked = getSetting(OVERLAY_STATUS)
-            setOnCheckedChangeListener { _, checked ->
-                saveSetting(OVERLAY_STATUS, checked)
-                refreshStatus()
-            }
-        }
-        outer.addView(overlayStatusCheckBox, matchWrap())
-
-        overlayChannelsCheckBox = CheckBox(this).apply {
-            text = "Overlay Channels"
-            textSize = 17f
-            isChecked = getSetting(OVERLAY_CHANNELS)
-            setOnCheckedChangeListener { _, checked ->
-                saveSetting(OVERLAY_CHANNELS, checked)
-                refreshStatus()
-            }
-        }
-        outer.addView(overlayChannelsCheckBox, matchWrap())
+        outer.addView(featureMode, matchWrap())
 
         statusText = TextView(this).apply {
             textSize = 15f
@@ -218,10 +159,6 @@ class MainActivity : Activity() {
         setContentView(scroll)
     }
 
-    private fun getSetting(key: String): Boolean =
-        getSharedPreferences(PREFS_NAME, MODE_PRIVATE)
-            .getBoolean(key, false)
-
     private fun saveSetting(key: String, value: Boolean) {
         getSharedPreferences(PREFS_NAME, MODE_PRIVATE)
             .edit()
@@ -241,13 +178,13 @@ class MainActivity : Activity() {
 
         statusText.text = buildString {
             appendLine("Block Status: " +
-                if (prefs.getBoolean(BLOCK_STATUS, false)) "ON" else "OFF")
+                if (BuildConfig.BLOCK_STATUS) "ON" else "OFF")
             appendLine("Block Channels: " +
-                if (prefs.getBoolean(BLOCK_CHANNELS, false)) "ON" else "OFF")
+                if (BuildConfig.BLOCK_CHANNELS) "ON" else "OFF")
             appendLine("Overlay Status: " +
-                if (prefs.getBoolean(OVERLAY_STATUS, false)) "ON" else "OFF")
+                if (BuildConfig.BLOCK_STATUS) "ON" else "OFF")
             appendLine("Overlay Channels: " +
-                if (prefs.getBoolean(OVERLAY_CHANNELS, false)) "ON" else "OFF")
+                if (BuildConfig.BLOCK_CHANNELS) "ON" else "OFF")
             appendLine("Diagnostic logging: " +
                 if (diagnosticEnabled) "ON" else "OFF")
             appendLine("Cooldown remaining: ${remainingSeconds}s")

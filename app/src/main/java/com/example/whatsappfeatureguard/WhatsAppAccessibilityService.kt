@@ -27,10 +27,6 @@ class WhatsAppAccessibilityService : AccessibilityService() {
 companion object {
     private const val PREFS_NAME = "feature_guard_settings"
     private const val DIAGNOSTIC_MODE = "diagnostic_mode"
-    private const val BLOCK_STATUS = "block_status"
-    private const val BLOCK_CHANNELS = "block_channels"
-    private const val OVERLAY_STATUS = "overlay_status"
-    private const val OVERLAY_CHANNELS = "overlay_channels"
     private const val COOLDOWN_UNTIL = "cooldown_until"
     private const val LOG_FILE = "whatsapp_accessibility_log.txt"
 
@@ -197,10 +193,12 @@ private fun processCurrentWindow(
     if (!serviceActive) return
 
     val prefs = getSharedPreferences(PREFS_NAME, MODE_PRIVATE)
-    val blockStatus = prefs.getBoolean(BLOCK_STATUS, false)
-    val blockChannels = prefs.getBoolean(BLOCK_CHANNELS, false)
-    val overlayStatus = prefs.getBoolean(OVERLAY_STATUS, false)
-    val overlayChannels = prefs.getBoolean(OVERLAY_CHANNELS, false)
+    // Feature selection is fixed by the build flavor. This means the
+    // correct blocking and overlays work even though the launcher icon is hidden.
+    val blockStatus = BuildConfig.BLOCK_STATUS
+    val blockChannels = BuildConfig.BLOCK_CHANNELS
+    val overlayStatus = BuildConfig.BLOCK_STATUS
+    val overlayChannels = BuildConfig.BLOCK_CHANNELS
     val diagnosticMode = prefs.getBoolean(DIAGNOSTIC_MODE, false)
 
     val now = System.currentTimeMillis()
