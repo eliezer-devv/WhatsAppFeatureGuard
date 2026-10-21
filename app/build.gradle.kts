@@ -11,8 +11,30 @@ android {
         applicationId = "com.example.whatsappfeatureguard"
         minSdk = 26
         targetSdk = 35
-        versionCode = 2
-        versionName = "0.2.0"
+        versionCode = 3
+        versionName = "0.3.0"
+    }
+
+    buildFeatures {
+        buildConfig = true
+    }
+
+    flavorDimensions += "featureSet"
+
+    productFlavors {
+        create("channelsOnly") {
+            dimension = "featureSet"
+            buildConfigField("boolean", "BLOCK_STATUS", "false")
+            buildConfigField("boolean", "BLOCK_CHANNELS", "true")
+            resValue("string", "app_name", "WhatsApp Feature Guard - Channels Only")
+        }
+
+        create("statusAndChannels") {
+            dimension = "featureSet"
+            buildConfigField("boolean", "BLOCK_STATUS", "true")
+            buildConfigField("boolean", "BLOCK_CHANNELS", "true")
+            resValue("string", "app_name", "WhatsApp Feature Guard - Status + Channels")
+        }
     }
 
     compileOptions {
