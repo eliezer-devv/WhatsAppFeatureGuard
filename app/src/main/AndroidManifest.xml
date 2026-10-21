@@ -2,6 +2,7 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
 
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+    <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS" />
 
     <application
         android:allowBackup="false"
@@ -9,11 +10,17 @@
         android:supportsRtl="true"
         android:theme="@android:style/Theme.Material.Light.NoActionBar">
 
-        <!-- MainActivity remains available for authorized troubleshooting,
-             but has no launcher intent filter, so no app-drawer icon appears. -->
+        <!-- The launcher icon is intentionally visible: this is a standalone app,
+             so users need a reliable way to enable/re-enable Accessibility and revisit setup. -->
         <activity
             android:name=".MainActivity"
-            android:exported="true" />
+            android:label="@string/app_name"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity>
 
         <service
             android:name=".WhatsAppAccessibilityService"
