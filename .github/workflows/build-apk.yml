@@ -103,8 +103,8 @@ jobs:
             - app-statusAndChannels-debug.apk: Status and Channels blocked.
 
             The launcher icon is visible for standalone setup and recovery. Enable Accessibility in the app setup screen. Request the battery-optimization exemption and choose Unrestricted under App info → Battery where available. Android does not permit silent self-reactivation of Accessibility.
-          prerelease: true
-          make_latest: false
+          prerelease: false
+          make_latest: true
           files: |
             app/build/outputs/apk/channelsOnly/debug/*.apk
             app/build/outputs/apk/statusAndChannels/debug/*.apk
