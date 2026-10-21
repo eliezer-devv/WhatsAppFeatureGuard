@@ -47,6 +47,10 @@ companion object {
     @Volatile
     var lastCaptureStatus: String = "Waiting for WhatsApp"
         private set
+
+    @Volatile
+    var isServiceConnected: Boolean = false
+        private set
 }
 
 private val handler = Handler(Looper.getMainLooper())
@@ -127,6 +131,7 @@ override fun onCreate() {
 override fun onServiceConnected() {
     super.onServiceConnected()
     serviceActive = true
+    isServiceConnected = true
     lastCaptureStatus = "Accessibility service connected"
 
     val prefs = getSharedPreferences(PREFS_NAME, MODE_PRIVATE)
@@ -193,8 +198,7 @@ private fun processCurrentWindow(
     if (!serviceActive) return
 
     val prefs = getSharedPreferences(PREFS_NAME, MODE_PRIVATE)
-    // Feature selection is fixed by the build flavor. This means the
-    // correct blocking and overlays work even though the launcher icon is hidden.
+    // Feature selection is fixed by the build flavor, independent of saved preferences.
     val blockStatus = BuildConfig.BLOCK_STATUS
     val blockChannels = BuildConfig.BLOCK_CHANNELS
     val overlayStatus = BuildConfig.BLOCK_STATUS
@@ -955,12 +959,14 @@ private fun eventTypeName(type: Int): String {
 }
 
 override fun onInterrupt() {
+    isServiceConnected = false
     removeAllOverlays()
     lastCaptureStatus = "Accessibility service interrupted"
 }
 
 override fun onDestroy() {
     serviceActive = false
+    isServiceConnected = false
     handler.removeCallbacks(rootRetryRunnable)
     handler.removeCallbacks(backOutRunnable)
     handler.removeCallbacks(lockoutCountdownRunnable)

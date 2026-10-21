@@ -10,6 +10,7 @@ import android.content.pm.PackageManager
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
+import android.os.PowerManager
 import android.provider.Settings
 import android.graphics.Typeface
 import android.view.Gravity
@@ -78,7 +79,8 @@ class MainActivity : Activity() {
 
         val explanation = TextView(this).apply {
             text = "This build has a fixed feature configuration. " +
-                "The accessibility service must be enabled in Android Settings."
+                "Use this setup screen to enable accessibility and reduce battery restrictions. " +
+                "Android does not allow an ordinary app to silently re-enable its own accessibility service."
             textSize = 16f
             setTextColor(0xFF333333.toInt())
             setPadding(0, dp(12), 0, dp(16))
@@ -110,6 +112,18 @@ class MainActivity : Activity() {
             setPadding(0, dp(4), 0, dp(12))
         }
         outer.addView(diagnosticText, matchWrap())
+
+        addButton(outer, "Set up / enable Accessibility") {
+            openAccessibilitySettings()
+        }
+
+        addButton(outer, "Request battery-optimization exemption") {
+            requestBatteryOptimizationExemption()
+        }
+
+        addButton(outer, "Open app battery settings (choose Unrestricted)") {
+            openAppDetailsSettings()
+        }
 
         addButton(outer, "Enable diagnostic logging") {
             saveSetting(DIAGNOSTIC_MODE, true)
@@ -150,12 +164,6 @@ class MainActivity : Activity() {
             clearLog()
         }
 
-        addButton(outer, "Open Accessibility settings") {
-            startActivity(
-                Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS)
-            )
-        }
-
         setContentView(scroll)
     }
 
@@ -191,15 +199,73 @@ class MainActivity : Activity() {
         }
 
         val serviceEnabled = isAccessibilityServiceEnabled()
+        val serviceConnected = WhatsAppAccessibilityService.isServiceConnected
+        val batteryExempt = isIgnoringBatteryOptimizations()
 
         diagnosticText.text = buildString {
-            appendLine("Accessibility service: " +
-                if (serviceEnabled) "enabled in system settings" else "NOT ENABLED")
+            appendLine("Accessibility enabled in Settings: " +
+                if (serviceEnabled) "YES" else "NO — tap Set up / enable Accessibility")
+            appendLine("Accessibility service connected now: " +
+                if (serviceConnected) "YES" else "NO / not currently connected")
+            appendLine("Ignoring battery optimizations: " +
+                if (batteryExempt) "YES" else "NO — request exemption below")
+            appendLine("Samsung battery setting: also set this app to Unrestricted in App info → Battery.")
             appendLine()
             appendLine("Latest service status:")
             appendLine(WhatsAppAccessibilityService.lastCaptureStatus)
             appendLine()
             append("Saved log size: ${logFile().length()} bytes")
+        }
+    }
+
+
+    private fun openAccessibilitySettings() {
+        try {
+            startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS))
+        } catch (_: Exception) {
+            toast("Could not open Accessibility settings. Open Settings manually.")
+        }
+    }
+
+    private fun requestBatteryOptimizationExemption() {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.M) {
+            toast("This Android version does not use this battery exemption setting.")
+            return
+        }
+
+        if (isIgnoringBatteryOptimizations()) {
+            toast("Battery-optimization exemption is already enabled. Also check App info → Battery → Unrestricted.")
+            openAppDetailsSettings()
+            return
+        }
+
+        try {
+            val intent = Intent(
+                Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS,
+                Uri.parse("package:$packageName")
+            )
+            startActivity(intent)
+        } catch (_: Exception) {
+            toast("Could not open the exemption request. Opening app settings instead.")
+            openAppDetailsSettings()
+        }
+    }
+
+    private fun isIgnoringBatteryOptimizations(): Boolean {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.M) return true
+        val powerManager = getSystemService(Context.POWER_SERVICE) as PowerManager
+        return powerManager.isIgnoringBatteryOptimizations(packageName)
+    }
+
+    private fun openAppDetailsSettings() {
+        try {
+            startActivity(
+                Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS)
+                    .setData(Uri.parse("package:$packageName"))
+            )
+            toast("In App info, open Battery and select Unrestricted if available.")
+        } catch (_: Exception) {
+            toast("Could not open app settings. Find WhatsApp Feature Guard under Settings → Apps.")
         }
     }
 
