@@ -11,12 +11,26 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Generate permanent signing key
+      - name: Check required passwords
+        env:
+          KEYSTORE_PASSWORD: ${{ secrets.WFG_KEYSTORE_PASSWORD }}
+          KEY_PASSWORD: ${{ secrets.WFG_KEY_PASSWORD }}
         run: |
-          keytool -genkeypair \
+          if [ -z "$KEYSTORE_PASSWORD" ] || [ -z "$KEY_PASSWORD" ]; then
+            echo "Required signing secrets are missing."
+            exit 1
+          fi
+
+      - name: Generate permanent signing key
+        env:
+          KEYSTORE_PASSWORD: ${{ secrets.WFG_KEYSTORE_PASSWORD }}
+          KEY_PASSWORD: ${{ secrets.WFG_KEY_PASSWORD }}
+        run: |
+          set -eu
+          keytool -genkeypair -v \
             -keystore wfg-signing.jks \
-            -storepass "${{ secrets.WFG_KEYSTORE_PASSWORD }}" \
-            -keypass "${{ secrets.WFG_KEY_PASSWORD }}" \
+            -storepass "$KEYSTORE_PASSWORD" \
+            -keypass "$KEY_PASSWORD" \
             -alias whatsappfeatureguard \
             -keyalg RSA \
             -keysize 2048 \
