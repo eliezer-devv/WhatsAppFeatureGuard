@@ -3,5 +3,4 @@
     <string name="app_name">WhatsApp Feature Guard</string>
     <string name="accessibility_service_name">WhatsApp Feature Guard</string>
     <string name="accessibility_service_description">Helps restrict access to selected WhatsApp features according to your settings.</string>
-    <string name="device_admin_description">Experimental Device Admin test for Feature Guard.</string>
 </resources>
