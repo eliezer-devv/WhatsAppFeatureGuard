@@ -94,8 +94,8 @@ jobs:
       - name: Publish both APKs to GitHub Release
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: latest
-          name: Latest WhatsApp Feature Guard APKs
+          tag_name: build-${{ github.run_number }}
+          name: WhatsApp Feature Guard Build ${{ github.run_number }}
           body: |
             Automatically built from the latest code on the main branch.
 
