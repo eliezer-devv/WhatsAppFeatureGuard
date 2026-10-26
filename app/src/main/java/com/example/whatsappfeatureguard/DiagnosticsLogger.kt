@@ -15,12 +15,10 @@ import java.util.concurrent.atomic.AtomicLong
 /**
  * Local-only diagnostic logging.
  *
- * diagnostic_mode: routine event logging.
- * detailed_capture_mode: full accessibility UI-tree snapshots.
- * include_ui_text: explicitly permits UI text in snapshots.
- *
- * UI text is redacted by default because accessibility trees can
- * contain private messages, names, and contact information.
+ * Basic Log records concise events and important failures.
+ * Full Log additionally captures UI trees and may include UI text.
+ * Each recurring event pattern and UI-tree pattern is sampled at most
+ * three times per process run, so the log stays useful rather than endless.
  */
 object DiagnosticsLogger {
 
@@ -35,18 +33,14 @@ object DiagnosticsLogger {
         "whatsapp_accessibility_log.previous.txt"
 
     private const val MAX_LOG_BYTES = 2 * 1024 * 1024L
-    private const val MAX_NODES = 800
-    private const val MAX_DEPTH = 40
-    private const val MAX_FIELD_LENGTH = 400
-    private const val TREE_THROTTLE_MS = 750L
+    private const val MAX_SAMPLES_PER_PATTERN = 3
+    private const val MAX_NODES = 500
+    private const val MAX_DEPTH = 30
+    private const val MAX_FIELD_LENGTH = 240
 
     private val sequence = AtomicLong(0)
-
-    @Volatile
-    private var lastTreeCaptureAt = 0L
-
-    @Volatile
-    private var lastTreeCaptureKey = ""
+    private val eventSamples = mutableMapOf<String, Int>()
+    private val treeSamples = mutableMapOf<String, Int>()
 
     fun routineEnabled(context: Context): Boolean =
         context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
@@ -61,7 +55,18 @@ object DiagnosticsLogger {
             .getBoolean(INCLUDE_TEXT_KEY, false)
 
     /**
-     * Routine events are only written when diagnostic logging is enabled.
+     * Reset in-memory sample limits when the user changes logging mode
+     * or clears the log. Existing log files are not changed by this method.
+     */
+    @Synchronized
+    fun resetCaptureLimits() {
+        eventSamples.clear()
+        treeSamples.clear()
+    }
+
+    /**
+     * Writes concise routine events only while logging is enabled.
+     * Each event name/detail pattern is limited to three samples.
      */
     fun event(
         context: Context,
@@ -69,6 +74,9 @@ object DiagnosticsLogger {
         details: String = ""
     ) {
         if (!routineEnabled(context)) return
+
+        val signature = eventSignature(name, details)
+        if (!allowSample(eventSamples, signature)) return
 
         write(
             context,
@@ -88,6 +96,7 @@ object DiagnosticsLogger {
 
     /**
      * Important failures are logged even when routine logging is disabled.
+     * Repeated failures of the same normalized pattern are capped at three.
      * Do not pass private UI text to this method.
      */
     fun failure(
@@ -95,6 +104,9 @@ object DiagnosticsLogger {
         name: String,
         details: String = ""
     ) {
+        val signature = eventSignature("FAILURE:$name", details)
+        if (!allowSample(eventSamples, signature)) return
+
         write(
             context,
             buildString {
@@ -112,7 +124,7 @@ object DiagnosticsLogger {
     }
 
     /**
-     * Records app, device, build variant, display and WhatsApp version details.
+     * Records app, device, build variant, display and WhatsApp version.
      */
     fun deviceHeader(
         context: Context,
@@ -121,16 +133,8 @@ object DiagnosticsLogger {
         if (!force && !routineEnabled(context)) return
 
         val metrics = context.resources.displayMetrics
-
-        val whatsappVersion = packageVersion(
-            context,
-            "com.whatsapp"
-        )
-
-        val appVersion = packageVersion(
-            context,
-            context.packageName
-        )
+        val whatsappVersion = packageVersion(context, "com.whatsapp")
+        val appVersion = packageVersion(context, context.packageName)
 
         write(
             context,
@@ -158,16 +162,16 @@ object DiagnosticsLogger {
                 appendLine("routineLogging=${routineEnabled(context)}")
                 appendLine("detailedCapture=${detailedEnabled(context)}")
                 appendLine("includeUiText=${includeTextEnabled(context)}")
+                appendLine("maxSamplesPerPattern=$MAX_SAMPLES_PER_PATTERN")
                 appendLine("===================================")
             }
         )
     }
 
     /**
-     * Captures the accessibility tree for the current window.
-     *
-     * By default, capture requires BOTH routine logging and detailed capture
-     * to be enabled. UI text remains redacted unless explicitly enabled.
+     * Captures a UI tree only in Full Log mode.
+     * Each event/window/detection pattern is captured at most three times.
+     * UI text is redacted unless the user explicitly enabled it.
      */
     fun tree(
         context: Context,
@@ -183,27 +187,17 @@ object DiagnosticsLogger {
             return
         }
 
-        // Avoid repeatedly writing the same tree for a burst of UI events.
-        synchronized(this) {
-            val now = System.currentTimeMillis()
-            val key = buildString {
-                append(event?.eventType)
-                append('|')
-                append(event?.windowId)
-                append('|')
-                append(detectionSummary)
-            }
-
-            if (
-                key == lastTreeCaptureKey &&
-                now - lastTreeCaptureAt < TREE_THROTTLE_MS
-            ) {
-                return
-            }
-
-            lastTreeCaptureKey = key
-            lastTreeCaptureAt = now
+        val pattern = buildString {
+            append(event?.eventType ?: -1)
+            append('|')
+            append(event?.packageName?.toString().orEmpty())
+            append('|')
+            append(event?.className?.toString().orEmpty())
+            append('|')
+            append(normalizePattern(detectionSummary))
         }
+
+        if (!allowSample(treeSamples, pattern)) return
 
         val includeText = includeTextEnabled(context)
         val count = intArrayOf(0)
@@ -234,9 +228,8 @@ object DiagnosticsLogger {
             "eventText=${textValue(event?.text?.joinToString(" | "), includeText)}"
         )
         output.appendLine("includeUiText=$includeText")
-        output.appendLine(
-            "detectionSummary=${clean(detectionSummary)}"
-        )
+        output.appendLine("sampleLimit=$MAX_SAMPLES_PER_PATTERN")
+        output.appendLine("detectionSummary=${clean(detectionSummary)}")
 
         try {
             appendNode(root, output, 0, count, includeText)
@@ -254,6 +247,34 @@ object DiagnosticsLogger {
 
         write(context, output.toString())
     }
+
+    /**
+     * Atomically grants at most three samples for a pattern.
+     */
+    @Synchronized
+    private fun allowSample(
+        samples: MutableMap<String, Int>,
+        signature: String
+    ): Boolean {
+        val count = samples[signature] ?: 0
+        if (count >= MAX_SAMPLES_PER_PATTERN) return false
+        samples[signature] = count + 1
+        return true
+    }
+
+    /**
+     * Normalize changing numbers so coordinates, counters and timestamps
+     * do not create endless unique patterns.
+     */
+    private fun eventSignature(name: String, details: String): String =
+        "$name|${normalizePattern(details).take(MAX_FIELD_LENGTH)}"
+
+    private fun normalizePattern(value: String): String =
+        value
+            .replace(Regex("\\d+"), "#")
+            .replace(Regex("\\s+"), " ")
+            .trim()
+            .take(MAX_FIELD_LENGTH)
 
     private fun appendNode(
         node: AccessibilityNodeInfo,
@@ -305,9 +326,7 @@ object DiagnosticsLogger {
         out.appendLine(
             "${indent} description=${textValue(node.contentDescription?.toString(), includeText)}"
         )
-        out.appendLine(
-            "${indent} hint=${textValue(hint, includeText)}"
-        )
+        out.appendLine("${indent} hint=${textValue(hint, includeText)}")
         out.appendLine("${indent} bounds=$bounds")
         out.appendLine("${indent} visibleToUser=${node.isVisibleToUser}")
         out.appendLine("${indent} clickable=${node.isClickable}")
@@ -342,13 +361,7 @@ object DiagnosticsLogger {
             } ?: continue
 
             try {
-                appendNode(
-                    child,
-                    out,
-                    depth + 1,
-                    count,
-                    includeText
-                )
+                appendNode(child, out, depth + 1, count, includeText)
             } catch (e: Exception) {
                 out.appendLine(
                     "${indent} child[$i] traversalError=" +
@@ -404,8 +417,7 @@ object DiagnosticsLogger {
             val previous = File(context.filesDir, PREVIOUS_FILE)
 
             try {
-                val incomingBytes =
-                    content.toByteArray(Charsets.UTF_8).size
+                val incomingBytes = content.toByteArray(Charsets.UTF_8).size
 
                 if (
                     current.exists() &&
@@ -424,10 +436,7 @@ object DiagnosticsLogger {
                     )
                 }
 
-                current.appendText(
-                    content + "\n",
-                    Charsets.UTF_8
-                )
+                current.appendText(content + "\n", Charsets.UTF_8)
             } catch (e: Exception) {
                 try {
                     current.appendText(
@@ -446,9 +455,7 @@ object DiagnosticsLogger {
         includeText: Boolean
     ): String {
         if (value.isNullOrBlank()) return "(empty)"
-        if (!includeText) {
-            return "[REDACTED length=${value.length}]"
-        }
+        if (!includeText) return "[REDACTED length=${value.length}]"
         return clean(value)
     }
 
