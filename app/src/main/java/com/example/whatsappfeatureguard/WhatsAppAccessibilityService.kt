@@ -138,6 +138,14 @@ override fun onServiceConnected() {
     serviceActive = true
     isServiceConnected = true
     lastCaptureStatus = "Accessibility service connected"
+    
+    DiagnosticsLogger.deviceHeader(this, force = true)
+
+DiagnosticsLogger.event(
+    this,
+    "SERVICE_CONNECTED",
+    "Accessibility service connected successfully"
+)
 
     val prefs = getSharedPreferences(PREFS_NAME, MODE_PRIVATE)
     val until = prefs.getLong(COOLDOWN_UNTIL, 0L)
@@ -237,6 +245,11 @@ private fun processCurrentWindow(
     val root = rootInActiveWindow
 
     if (root == null) {
+        DiagnosticsLogger.event(
+    this,
+    "ACCESSIBILITY_ROOT_MISSING",
+    "WhatsApp event received but rootInActiveWindow was null; retryCount=$rootRetryCount"
+)
         if (diagnosticMode) {
             lastCaptureStatus =
                 "WhatsApp event received, but no accessible root"
@@ -272,11 +285,32 @@ private fun processCurrentWindow(
             append("; blocking enabled: Status=").append(blockStatus)
             append(", Channels=").append(blockChannels)
         }
-        if (diagnosticMode && lastDetectionSummary != lastLoggedDetectionSummary) {
-            appendToLog("\n[DETECTION ${Date()}] $lastDetectionSummary\n")
-            lastLoggedDetectionSummary = lastDetectionSummary
+        if (lastDetectionSummary != lastLoggedDetectionSummary) {
+    DiagnosticsLogger.event(
+        this,
+        "SCREEN_DETECTION",
+        lastDetectionSummary
+    )
+
+    if (diagnosticMode) {
+        appendToLog(
+            "\n[DETECTION ${Date()}] $lastDetectionSummary\n"
+        )
+    }
+
+    lastLoggedDetectionSummary = lastDetectionSummary
         }
-        if (diagnosticMode && event != null) captureScreen(event, root)
+        
+        if (diagnosticMode && event != null) {
+    captureScreen(event, root)
+
+    DiagnosticsLogger.tree(
+        context = this,
+        event = event,
+        root = root,
+        detectionSummary = lastDetectionSummary
+    )
+        }
 
         val statusViewer = blockStatus && statusViewerDetected
         val channelsScreen = blockChannels && channelsScreenDetected
@@ -543,10 +577,24 @@ private fun setOverlay(
     }
 
     val oldBounds = overlayRects[key]
-    val existing = overlayViews[key]
+val existing = overlayViews[key]
 
-    if (existing != null && oldBounds == bounds) return
+if (existing != null && oldBounds == bounds) {
+    DiagnosticsLogger.event(
+        this,
+        "OVERLAY_UNCHANGED",
+        "key=$key; label=$label; bounds=$bounds; tracked=true"
+    )
+    return
+}
 
+DiagnosticsLogger.event(
+    this,
+    "OVERLAY_REQUEST",
+    "key=$key; label=$label; bounds=$bounds; " +
+        "action=${if (existing == null) "ADD" else "UPDATE"}; " +
+        "oldBounds=$oldBounds"
+)
     val windowManager =
         getSystemService(WINDOW_SERVICE) as WindowManager
 
@@ -589,23 +637,54 @@ private fun setOverlay(
         }
 
         overlayRects[key] = Rect(bounds)
+        DiagnosticsLogger.event(
+    this,
+    "OVERLAY_SUCCESS",
+    "key=$key; label=$label; bounds=$bounds; " +
+        "viewTracked=${overlayViews.containsKey(key)}; " +
+        "rectTracked=${overlayRects.containsKey(key)}; " +
+        "viewWidth=${view.width}; viewHeight=${view.height}"
+)
     } catch (e: Exception) {
+        DiagnosticsLogger.failure(
+    this,
+    "OVERLAY_FAILURE",
+    "key=$key; label=$label; requestedBounds=$bounds; " +
+        "exception=${e.javaClass.name}; message=${e.message}"
+)
         lastCaptureStatus =
             "Overlay error: ${e.javaClass.simpleName}"
-        removeOverlay(key)
     }
 }
 
 private fun removeOverlay(key: String) {
-    val view = overlayViews.remove(key)
-    overlayRects.remove(key)
+    val previousBounds = overlayRects[key]
+val view = overlayViews.remove(key)
+overlayRects.remove(key)
 
     if (view != null) {
-        try {
+    DiagnosticsLogger.event(
+        this,
+        "OVERLAY_REMOVE_REQUEST",
+        "key=$key; previousBounds=$previousBounds; viewTracked=true"; viewTracked=true"
+    )
+
+    try {
             val windowManager =
                 getSystemService(WINDOW_SERVICE) as WindowManager
             windowManager.removeView(view)
+            DiagnosticsLogger.event(
+    this,
+    "OVERLAY_REMOVED",
+    "key=$key; previousBounds=$previousBounds; removeViewReturned=true"
+)
         } catch (_: Exception) {
+        DiagnosticsLogger.failure(
+    this,
+    "OVERLAY_REMOVE_FAILURE",
+    "key=$key; previousBounds=$previousBounds; " +
+        "exception occurred while removing the view"
+)
             // Android may already have removed the view.
         }
     }
