@@ -2,8 +2,6 @@ package com.example.whatsappfeatureguard
 
 import android.Manifest
 import android.app.Activity
-import android.content.ClipData
-import android.content.ClipboardManager
 import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
@@ -83,8 +81,8 @@ class MainActivity : Activity() {
 
         val explanation = TextView(this).apply {
             text = "This build has a fixed feature configuration. " +
-                "Use this setup screen to enable accessibility and reduce battery restrictions. " +
-                "Android does not allow an ordinary app to silently re-enable its own accessibility service."
+                "Use this screen to enable Accessibility and reduce battery restrictions. " +
+                "Android does not allow an ordinary app to silently re-enable its own Accessibility service."
             textSize = 16f
             setTextColor(0xFF333333.toInt())
             setPadding(0, dp(12), 0, dp(16))
@@ -129,42 +127,20 @@ class MainActivity : Activity() {
             openAppDetailsSettings()
         }
 
-        addButton(outer, "Enable diagnostic logging") {
-            saveSetting(DIAGNOSTIC_MODE, true)
-            toast("Diagnostic logging enabled.")
-            refreshStatus()
+        addButton(outer, "Basic Log — enable") {
+            setLoggingMode(full = false)
         }
 
-        addButton(outer, "Disable diagnostic logging") {
-            saveSetting(DIAGNOSTIC_MODE, false)
-            toast("Diagnostic logging disabled.")
-            refreshStatus()
+        addButton(outer, "Full Log — enable detailed capture") {
+            setLoggingMode(full = true)
         }
 
-        addButton(outer, "Enable detailed UI-tree capture") {
-            saveSetting(DiagnosticsLogger.DETAILED_KEY, true)
-            toast("Detailed UI-tree capture enabled.")
-            refreshStatus()
+        addButton(outer, "Share Complete Log") {
+            shareLog()
         }
 
-        addButton(outer, "Disable detailed UI-tree capture") {
-            saveSetting(DiagnosticsLogger.DETAILED_KEY, false)
-            toast("Detailed UI-tree capture disabled.")
-            refreshStatus()
-        }
-
-        addButton(outer, "Allow UI text in diagnostic logs") {
-            saveSetting(DiagnosticsLogger.INCLUDE_TEXT_KEY, true)
-            toast(
-                "UI text capture enabled. Logs may contain private messages or contact information."
-            )
-            refreshStatus()
-        }
-
-        addButton(outer, "Redact UI text in diagnostic logs") {
-            saveSetting(DiagnosticsLogger.INCLUDE_TEXT_KEY, false)
-            toast("UI text will be redacted in new detailed captures.")
-            refreshStatus()
+        addButton(outer, "Clear diagnostic log") {
+            clearLog()
         }
 
         addButton(outer, "Refresh status") {
@@ -175,19 +151,32 @@ class MainActivity : Activity() {
             openWhatsApp()
         }
 
-        addButton(outer, "Share diagnostic log") {
-            shareLog()
-        }
-
-        addButton(outer, "Copy diagnostic log") {
-            copyLog()
-        }
-
-        addButton(outer, "Clear diagnostic log") {
-            clearLog()
-        }
-
         setContentView(scroll)
+    }
+
+    private fun setLoggingMode(full: Boolean) {
+        val prefs = getSharedPreferences(PREFS_NAME, MODE_PRIVATE)
+
+        prefs.edit()
+            .putBoolean(DIAGNOSTIC_MODE, true)
+            .putBoolean(DiagnosticsLogger.DETAILED_KEY, full)
+            .putBoolean(DiagnosticsLogger.INCLUDE_TEXT_KEY, full)
+            .apply()
+
+        DiagnosticsLogger.resetCaptureLimits()
+        DiagnosticsLogger.deviceHeader(this, force = true)
+
+        if (full) {
+            toast(
+                "Full Log enabled. UI text may contain private messages, names, and contact information."
+            )
+        } else {
+            toast(
+                "Basic Log enabled. UI-tree dumps and UI text are disabled."
+            )
+        }
+
+        refreshStatus()
     }
 
     private fun openWhatsApp() {
@@ -233,25 +222,15 @@ class MainActivity : Activity() {
         )
     }
 
-    private fun saveSetting(key: String, value: Boolean) {
-        getSharedPreferences(PREFS_NAME, MODE_PRIVATE)
-            .edit()
-            .putBoolean(key, value)
-            .apply()
-    }
-
     private fun refreshStatus() {
         val prefs = getSharedPreferences(PREFS_NAME, MODE_PRIVATE)
 
         val diagnosticEnabled =
             prefs.getBoolean(DIAGNOSTIC_MODE, false)
-
         val detailedEnabled =
             DiagnosticsLogger.detailedEnabled(this)
-
         val includeText =
             DiagnosticsLogger.includeTextEnabled(this)
-
         val cooldownUntil =
             prefs.getLong(COOLDOWN_UNTIL, 0L)
 
@@ -259,6 +238,12 @@ class MainActivity : Activity() {
             (cooldownUntil - System.currentTimeMillis())
                 .coerceAtLeast(0L) / 1000L
             )
+
+        val loggingMode = when {
+            !diagnosticEnabled -> "OFF"
+            detailedEnabled && includeText -> "FULL"
+            else -> "BASIC"
+        }
 
         statusText.text = buildString {
             appendLine(
@@ -277,17 +262,14 @@ class MainActivity : Activity() {
                 "Overlay Channels: " +
                     if (BuildConfig.BLOCK_CHANNELS) "ON" else "OFF"
             )
+            appendLine("Logging mode: $loggingMode")
             appendLine(
-                "Diagnostic logging: " +
-                    if (diagnosticEnabled) "ON" else "OFF"
-            )
-            appendLine(
-                "Detailed UI-tree capture: " +
-                    if (detailedEnabled) "ON" else "OFF"
-            )
-            appendLine(
-                "UI text in new captures: " +
-                    if (includeText) "INCLUDED — CHECK PRIVACY" else "REDACTED"
+                "UI text: " +
+                    if (includeText) {
+                        "INCLUDED — CHECK PRIVACY"
+                    } else {
+                        "NOT INCLUDED"
+                    }
             )
             appendLine("Cooldown remaining: ${remainingSeconds}s")
         }
@@ -327,14 +309,10 @@ class MainActivity : Activity() {
             )
             appendLine()
             appendLine("Latest service status:")
-            appendLine(
-                WhatsAppAccessibilityService.lastCaptureStatus
-            )
+            appendLine(WhatsAppAccessibilityService.lastCaptureStatus)
             appendLine()
             appendLine("Latest detection report:")
-            appendLine(
-                WhatsAppAccessibilityService.lastDetectionSummary
-            )
+            appendLine(WhatsAppAccessibilityService.lastDetectionSummary)
             appendLine()
             appendLine("Current log: ${logFile().length()} bytes")
             appendLine("Previous log: ${previousLogFile().length()} bytes")
@@ -343,9 +321,7 @@ class MainActivity : Activity() {
 
     private fun openAccessibilitySettings() {
         try {
-            startActivity(
-                Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS)
-            )
+            startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS))
         } catch (_: Exception) {
             toast(
                 "Could not open Accessibility settings. Open Settings manually."
@@ -384,9 +360,7 @@ class MainActivity : Activity() {
     }
 
     private fun isIgnoringBatteryOptimizations(): Boolean {
-        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.M) {
-            return true
-        }
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.M) return true
 
         val powerManager =
             getSystemService(Context.POWER_SERVICE) as PowerManager
@@ -424,8 +398,7 @@ class MainActivity : Activity() {
         }
     }
 
-    private fun logFile(): File =
-        File(filesDir, LOG_FILE)
+    private fun logFile(): File = File(filesDir, LOG_FILE)
 
     private fun previousLogFile(): File =
         File(filesDir, PREVIOUS_LOG_FILE)
@@ -464,9 +437,7 @@ class MainActivity : Activity() {
             (!current.exists() || current.length() == 0L) &&
             (!previous.exists() || previous.length() == 0L)
         ) {
-            toast(
-                "No log yet. Enable logging and navigate WhatsApp first."
-            )
+            toast("No log yet. Enable Basic Log or Full Log and navigate WhatsApp first.")
             return
         }
 
@@ -481,7 +452,8 @@ class MainActivity : Activity() {
             val intent = Intent(Intent.ACTION_SEND).apply {
                 type = "text/plain"
                 putExtra(Intent.EXTRA_STREAM, uri)
-                clipData = ClipData.newUri(
+                putExtra(Intent.EXTRA_SUBJECT, "WhatsApp Feature Guard diagnostic log")
+                clipData = android.content.ClipData.newUri(
                     contentResolver,
                     "WhatsApp diagnostic log",
                     uri
@@ -490,50 +462,10 @@ class MainActivity : Activity() {
             }
 
             startActivity(
-                Intent.createChooser(
-                    intent,
-                    "Share diagnostic log"
-                )
+                Intent.createChooser(intent, "Share Complete Log")
             )
         } catch (e: Exception) {
-            toast(
-                "Could not share log: ${e.javaClass.simpleName}"
-            )
-        }
-    }
-
-    private fun copyLog() {
-        val current = logFile()
-        val previous = previousLogFile()
-
-        if (
-            (!current.exists() || current.length() == 0L) &&
-            (!previous.exists() || previous.length() == 0L)
-        ) {
-            toast(
-                "No log yet. Enable logging and navigate WhatsApp first."
-            )
-            return
-        }
-
-        try {
-            val file = exportLogFile()
-            val clipboard =
-                getSystemService(Context.CLIPBOARD_SERVICE)
-                    as ClipboardManager
-
-            clipboard.setPrimaryClip(
-                ClipData.newPlainText(
-                    "WhatsApp diagnostic log",
-                    file.readText()
-                )
-            )
-
-            toast("Diagnostic log copied.")
-        } catch (e: Exception) {
-            toast(
-                "Could not copy log: ${e.javaClass.simpleName}"
-            )
+            toast("Could not share log: ${e.javaClass.simpleName}")
         }
     }
 
@@ -541,6 +473,7 @@ class MainActivity : Activity() {
         logFile().delete()
         previousLogFile().delete()
         File(filesDir, EXPORT_LOG_FILE).delete()
+        DiagnosticsLogger.resetCaptureLimits()
 
         toast("Diagnostic logs cleared.")
         refreshStatus()
@@ -578,10 +511,6 @@ class MainActivity : Activity() {
         (value * resources.displayMetrics.density).toInt()
 
     private fun toast(message: String) {
-        Toast.makeText(
-            this,
-            message,
-            Toast.LENGTH_LONG
-        ).show()
+        Toast.makeText(this, message, Toast.LENGTH_LONG).show()
     }
 }
