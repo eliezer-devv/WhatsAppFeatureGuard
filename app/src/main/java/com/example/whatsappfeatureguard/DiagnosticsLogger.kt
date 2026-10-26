@@ -1,9 +1,9 @@
 package com.example.whatsappfeatureguard
 
 import android.content.Context
+import android.content.pm.PackageManager
 import android.graphics.Rect
 import android.os.Build
-import android.view.WindowManager
 import android.view.accessibility.AccessibilityEvent
 import android.view.accessibility.AccessibilityNodeInfo
 import java.io.File
@@ -13,31 +13,40 @@ import java.util.Locale
 import java.util.concurrent.atomic.AtomicLong
 
 /**
- * Local-only diagnostics.
+ * Local-only diagnostic logging.
  *
  * diagnostic_mode: routine event logging.
- * detailed_capture_mode: full UI-tree snapshots.
+ * detailed_capture_mode: full accessibility UI-tree snapshots.
  * include_ui_text: explicitly permits UI text in snapshots.
  *
- * Text is redacted by default because accessibility trees can
- * contain private messages and contact information.
+ * UI text is redacted by default because accessibility trees can
+ * contain private messages, names, and contact information.
  */
 object DiagnosticsLogger {
 
     private const val PREFS = "feature_guard_settings"
+
     const val ROUTINE_KEY = "diagnostic_mode"
     const val DETAILED_KEY = "detailed_capture_mode"
     const val INCLUDE_TEXT_KEY = "include_ui_text"
 
     private const val LOG_FILE = "whatsapp_accessibility_log.txt"
-    private const val PREVIOUS_FILE = "whatsapp_accessibility_log.previous.txt"
+    private const val PREVIOUS_FILE =
+        "whatsapp_accessibility_log.previous.txt"
 
     private const val MAX_LOG_BYTES = 2 * 1024 * 1024L
     private const val MAX_NODES = 800
     private const val MAX_DEPTH = 40
     private const val MAX_FIELD_LENGTH = 400
+    private const val TREE_THROTTLE_MS = 750L
 
     private val sequence = AtomicLong(0)
+
+    @Volatile
+    private var lastTreeCaptureAt = 0L
+
+    @Volatile
+    private var lastTreeCaptureKey = ""
 
     fun routineEnabled(context: Context): Boolean =
         context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
@@ -51,107 +60,115 @@ object DiagnosticsLogger {
         context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
             .getBoolean(INCLUDE_TEXT_KEY, false)
 
-    fun event(context: Context, name: String, details: String = "") {
+    /**
+     * Routine events are only written when diagnostic logging is enabled.
+     */
+    fun event(
+        context: Context,
+        name: String,
+        details: String = ""
+    ) {
         if (!routineEnabled(context)) return
-        write(context, buildString {
-            appendLine()
-            appendLine("========== EVENT ==========")
-            appendLine("time=${timestamp()}")
-            appendLine("sequence=${sequence.incrementAndGet()}")
-            appendLine("event=${clean(name)}")
-            if (details.isNotBlank()) appendLine(clean(details))
-            appendLine("===========================")
-        })
+
+        write(
+            context,
+            buildString {
+                appendLine()
+                appendLine("========== EVENT ==========")
+                appendLine("time=${timestamp()}")
+                appendLine("sequence=${sequence.incrementAndGet()}")
+                appendLine("event=${clean(name)}")
+                if (details.isNotBlank()) {
+                    appendLine(clean(details))
+                }
+                appendLine("===========================")
+            }
+        )
     }
 
     /**
-     * Important errors are retained even when routine logging is off.
-     * This deliberately records only diagnostic metadata, not UI text.
+     * Important failures are logged even when routine logging is disabled.
+     * Do not pass private UI text to this method.
      */
-    fun failure(context: Context, name: String, details: String = "") {
-        write(context, buildString {
-            appendLine()
-            appendLine("======= IMPORTANT FAILURE =======")
-            appendLine("time=${timestamp()}")
-            appendLine("sequence=${sequence.incrementAndGet()}")
-            appendLine("event=${clean(name)}")
-            if (details.isNotBlank()) appendLine(clean(details))
-            appendLine("=================================")
-        })
+    fun failure(
+        context: Context,
+        name: String,
+        details: String = ""
+    ) {
+        write(
+            context,
+            buildString {
+                appendLine()
+                appendLine("======= IMPORTANT FAILURE =======")
+                appendLine("time=${timestamp()}")
+                appendLine("sequence=${sequence.incrementAndGet()}")
+                appendLine("event=${clean(name)}")
+                if (details.isNotBlank()) {
+                    appendLine(clean(details))
+                }
+                appendLine("=================================")
+            }
+        )
     }
 
-    fun deviceHeader(context: Context, force: Boolean = false) {
+    /**
+     * Records app, device, build variant, display and WhatsApp version details.
+     */
+    fun deviceHeader(
+        context: Context,
+        force: Boolean = false
+    ) {
         if (!force && !routineEnabled(context)) return
 
         val metrics = context.resources.displayMetrics
-        val whatsapp = try {
-            val info = if (Build.VERSION.SDK_INT >= 33) {
-                context.packageManager.getPackageInfo(
-                    "com.whatsapp",
-                    android.content.pm.PackageManager.PackageInfoFlags.of(0)
-                )
-            } else {
-                @Suppress("DEPRECATION")
-                context.packageManager.getPackageInfo("com.whatsapp", 0)
-            }
-            val code = if (Build.VERSION.SDK_INT >= 28) {
-                info.longVersionCode
-            } else {
-                @Suppress("DEPRECATION")
-                info.versionCode.toLong()
-            }
-            "${info.versionName ?: "unknown"} (code=$code)"
-        } catch (e: Exception) {
-            "unavailable (${e.javaClass.simpleName})"
-        }
 
-        val appVersion = try {
-            val info = if (Build.VERSION.SDK_INT >= 33) {
-                context.packageManager.getPackageInfo(
-                    context.packageName,
-                    android.content.pm.PackageManager.PackageInfoFlags.of(0)
-                )
-            } else {
-                @Suppress("DEPRECATION")
-                context.packageManager.getPackageInfo(context.packageName, 0)
-            }
-            val code = if (Build.VERSION.SDK_INT >= 28) {
-                info.longVersionCode
-            } else {
-                @Suppress("DEPRECATION")
-                info.versionCode.toLong()
-            }
-            "${info.versionName ?: "unknown"} (code=$code)"
-        } catch (_: Exception) {
-            "unknown"
-        }
+        val whatsappVersion = packageVersion(
+            context,
+            "com.whatsapp"
+        )
 
-        write(context, buildString {
-            appendLine()
-            appendLine("======= DEVICE / BUILD INFO =======")
-            appendLine("time=${timestamp()}")
-            appendLine("appPackage=${context.packageName}")
-            appendLine("appVersion=$appVersion")
-            appendLine("buildVariant=${BuildConfig.FLAVOR}")
-            appendLine("blockStatus=${BuildConfig.BLOCK_STATUS}")
-            appendLine("blockChannels=${BuildConfig.BLOCK_CHANNELS}")
-            appendLine("manufacturer=${clean(Build.MANUFACTURER)}")
-            appendLine("brand=${clean(Build.BRAND)}")
-            appendLine("model=${clean(Build.MODEL)}")
-            appendLine("device=${clean(Build.DEVICE)}")
-            appendLine("androidRelease=${Build.VERSION.RELEASE}")
-            appendLine("sdkInt=${Build.VERSION.SDK_INT}")
-            appendLine("display=${metrics.widthPixels}x${metrics.heightPixels}")
-            appendLine("density=${metrics.density}")
-            appendLine("densityDpi=${metrics.densityDpi}")
-            appendLine("whatsappVersion=$whatsapp")
-            appendLine("routineLogging=${routineEnabled(context)}")
-            appendLine("detailedCapture=${detailedEnabled(context)}")
-            appendLine("includeUiText=${includeTextEnabled(context)}")
-            appendLine("===================================")
-        })
+        val appVersion = packageVersion(
+            context,
+            context.packageName
+        )
+
+        write(
+            context,
+            buildString {
+                appendLine()
+                appendLine("======= DEVICE / BUILD INFO =======")
+                appendLine("time=${timestamp()}")
+                appendLine("appPackage=${context.packageName}")
+                appendLine("appVersion=$appVersion")
+                appendLine("buildVariant=${BuildConfig.FLAVOR}")
+                appendLine("blockStatus=${BuildConfig.BLOCK_STATUS}")
+                appendLine("blockChannels=${BuildConfig.BLOCK_CHANNELS}")
+                appendLine("manufacturer=${clean(Build.MANUFACTURER)}")
+                appendLine("brand=${clean(Build.BRAND)}")
+                appendLine("model=${clean(Build.MODEL)}")
+                appendLine("device=${clean(Build.DEVICE)}")
+                appendLine("androidRelease=${Build.VERSION.RELEASE}")
+                appendLine("sdkInt=${Build.VERSION.SDK_INT}")
+                appendLine(
+                    "display=${metrics.widthPixels}x${metrics.heightPixels}"
+                )
+                appendLine("density=${metrics.density}")
+                appendLine("densityDpi=${metrics.densityDpi}")
+                appendLine("whatsappVersion=$whatsappVersion")
+                appendLine("routineLogging=${routineEnabled(context)}")
+                appendLine("detailedCapture=${detailedEnabled(context)}")
+                appendLine("includeUiText=${includeTextEnabled(context)}")
+                appendLine("===================================")
+            }
+        )
     }
 
+    /**
+     * Captures the accessibility tree for the current window.
+     *
+     * By default, capture requires BOTH routine logging and detailed capture
+     * to be enabled. UI text remains redacted unless explicitly enabled.
+     */
     fun tree(
         context: Context,
         event: AccessibilityEvent?,
@@ -159,9 +176,34 @@ object DiagnosticsLogger {
         detectionSummary: String,
         force: Boolean = false
     ) {
-        if (!force &&
+        if (
+            !force &&
             (!routineEnabled(context) || !detailedEnabled(context))
-        ) return
+        ) {
+            return
+        }
+
+        // Avoid repeatedly writing the same tree for a burst of UI events.
+        synchronized(this) {
+            val now = System.currentTimeMillis()
+            val key = buildString {
+                append(event?.eventType)
+                append('|')
+                append(event?.windowId)
+                append('|')
+                append(detectionSummary)
+            }
+
+            if (
+                key == lastTreeCaptureKey &&
+                now - lastTreeCaptureAt < TREE_THROTTLE_MS
+            ) {
+                return
+            }
+
+            lastTreeCaptureKey = key
+            lastTreeCaptureAt = now
+        }
 
         val includeText = includeTextEnabled(context)
         val count = intArrayOf(0)
@@ -171,18 +213,39 @@ object DiagnosticsLogger {
         output.appendLine("========== UI TREE SNAPSHOT ==========")
         output.appendLine("time=${timestamp()}")
         output.appendLine("sequence=${sequence.incrementAndGet()}")
-        output.appendLine("eventType=${event?.let { eventType(it.eventType) } ?: "RETRY_OR_MANUAL"}")
-        output.appendLine("eventPackage=${clean(event?.packageName?.toString())}")
-        output.appendLine("eventClass=${clean(event?.className?.toString())}")
+        output.appendLine(
+            "eventType=${event?.let { eventType(it.eventType) } ?: "RETRY_OR_MANUAL"}"
+        )
+        output.appendLine(
+            "eventPackage=${clean(event?.packageName?.toString())}"
+        )
+        output.appendLine(
+            "eventClass=${clean(event?.className?.toString())}"
+        )
         output.appendLine("windowId=${event?.windowId ?: -1}")
-        output.appendLine("rootPackage=${clean(root.packageName?.toString())}")
+        output.appendLine(
+            "rootPackage=${clean(root.packageName?.toString())}"
+        )
         output.appendLine("rootWindowId=${root.windowId}")
-        output.appendLine("contentChangeTypes=${event?.contentChangeTypes ?: 0}")
-        output.appendLine("eventText=${textValue(event?.text?.joinToString(" | "), includeText)}")
+        output.appendLine(
+            "contentChangeTypes=${event?.contentChangeTypes ?: 0}"
+        )
+        output.appendLine(
+            "eventText=${textValue(event?.text?.joinToString(" | "), includeText)}"
+        )
         output.appendLine("includeUiText=$includeText")
-        output.appendLine("detectionSummary=${clean(detectionSummary)}")
+        output.appendLine(
+            "detectionSummary=${clean(detectionSummary)}"
+        )
 
-        appendNode(root, output, 0, count, includeText)
+        try {
+            appendNode(root, output, 0, count, includeText)
+        } catch (e: Exception) {
+            output.appendLine(
+                "TREE_TRAVERSAL_FAILURE=${e.javaClass.simpleName}: " +
+                    clean(e.message)
+            )
+        }
 
         output.appendLine("totalNodes=${count[0]}")
         output.appendLine("nodeLimit=$MAX_NODES")
@@ -200,6 +263,7 @@ object DiagnosticsLogger {
         includeText: Boolean
     ) {
         if (count[0] >= MAX_NODES || depth > MAX_DEPTH) return
+
         count[0]++
 
         val bounds = Rect()
@@ -209,24 +273,41 @@ object DiagnosticsLogger {
             bounds.setEmpty()
         }
 
-        val id = try {
+        val viewId = try {
             node.viewIdResourceName
         } catch (_: Exception) {
             null
         }
 
         val hint = if (Build.VERSION.SDK_INT >= 26) {
-            try { node.hintText?.toString() } catch (_: Exception) { null }
-        } else null
+            try {
+                node.hintText?.toString()
+            } catch (_: Exception) {
+                null
+            }
+        } else {
+            null
+        }
 
         val indent = "  ".repeat(depth)
+
         out.appendLine("${indent}NODE #${count[0]}")
-        out.appendLine("${indent} class=${clean(node.className?.toString())}")
-        out.appendLine("${indent} package=${clean(node.packageName?.toString())}")
-        out.appendLine("${indent} viewId=${clean(id)}")
-        out.appendLine("${indent} text=${textValue(node.text?.toString(), includeText)}")
-        out.appendLine("${indent} description=${textValue(node.contentDescription?.toString(), includeText)}")
-        out.appendLine("${indent} hint=${textValue(hint, includeText)}")
+        out.appendLine(
+            "${indent} class=${clean(node.className?.toString())}"
+        )
+        out.appendLine(
+            "${indent} package=${clean(node.packageName?.toString())}"
+        )
+        out.appendLine("${indent} viewId=${clean(viewId)}")
+        out.appendLine(
+            "${indent} text=${textValue(node.text?.toString(), includeText)}"
+        )
+        out.appendLine(
+            "${indent} description=${textValue(node.contentDescription?.toString(), includeText)}"
+        )
+        out.appendLine(
+            "${indent} hint=${textValue(hint, includeText)}"
+        )
         out.appendLine("${indent} bounds=$bounds")
         out.appendLine("${indent} visibleToUser=${node.isVisibleToUser}")
         out.appendLine("${indent} clickable=${node.isClickable}")
@@ -237,7 +318,9 @@ object DiagnosticsLogger {
         out.appendLine("${indent} enabled=${node.isEnabled}")
         out.appendLine("${indent} focusable=${node.isFocusable}")
         out.appendLine("${indent} focused=${node.isFocused}")
-        out.appendLine("${indent} accessibilityFocused=${node.isAccessibilityFocused}")
+        out.appendLine(
+            "${indent} accessibilityFocused=${node.isAccessibilityFocused}"
+        )
         out.appendLine("${indent} scrollable=${node.isScrollable}")
         out.appendLine("${indent} editable=${node.isEditable}")
         out.appendLine("${indent} password=${node.isPassword}")
@@ -252,56 +335,126 @@ object DiagnosticsLogger {
             val child = try {
                 node.getChild(i)
             } catch (e: Exception) {
-                out.appendLine("${indent} child[$i] error=${e.javaClass.simpleName}")
+                out.appendLine(
+                    "${indent} child[$i] error=${e.javaClass.simpleName}"
+                )
                 null
             } ?: continue
 
             try {
-                appendNode(child, out, depth + 1, count, includeText)
+                appendNode(
+                    child,
+                    out,
+                    depth + 1,
+                    count,
+                    includeText
+                )
             } catch (e: Exception) {
                 out.appendLine(
-                    "${indent} child[$i] traversalError=${e.javaClass.simpleName}"
+                    "${indent} child[$i] traversalError=" +
+                        e.javaClass.simpleName
                 )
             } finally {
-                try { child.recycle() } catch (_: Exception) {}
+                try {
+                    child.recycle()
+                } catch (_: Exception) {
+                    // Ignore recycled-node cleanup errors.
+                }
             }
         }
     }
 
-    private fun write(context: Context, content: String) {
+    private fun packageVersion(
+        context: Context,
+        packageName: String
+    ): String {
+        return try {
+            val info = if (Build.VERSION.SDK_INT >= 33) {
+                context.packageManager.getPackageInfo(
+                    packageName,
+                    PackageManager.PackageInfoFlags.of(0)
+                )
+            } else {
+                @Suppress("DEPRECATION")
+                context.packageManager.getPackageInfo(packageName, 0)
+            }
+
+            val versionCode = if (Build.VERSION.SDK_INT >= 28) {
+                info.longVersionCode
+            } else {
+                @Suppress("DEPRECATION")
+                info.versionCode.toLong()
+            }
+
+            "${info.versionName ?: "unknown"} (code=$versionCode)"
+        } catch (e: Exception) {
+            "unavailable (${e.javaClass.simpleName})"
+        }
+    }
+
+    /**
+     * Writes to the current log and retains one previous segment on rotation.
+     */
+    private fun write(
+        context: Context,
+        content: String
+    ) {
         synchronized(this) {
-            val file = File(context.filesDir, LOG_FILE)
+            val current = File(context.filesDir, LOG_FILE)
             val previous = File(context.filesDir, PREVIOUS_FILE)
 
             try {
-                val incomingBytes = content.toByteArray(Charsets.UTF_8).size
-                if (file.exists() && file.length() + incomingBytes > MAX_LOG_BYTES) {
+                val incomingBytes =
+                    content.toByteArray(Charsets.UTF_8).size
+
+                if (
+                    current.exists() &&
+                    current.length() + incomingBytes > MAX_LOG_BYTES
+                ) {
                     if (previous.exists()) previous.delete()
-                    if (file.exists()) file.copyTo(previous, overwrite = true)
-                    file.writeText(
-                        "Log rotated. Previous segment: $PREVIOUS_FILE\n",
+
+                    if (current.exists()) {
+                        current.copyTo(previous, overwrite = true)
+                    }
+
+                    current.writeText(
+                        "Log rotated at ${timestamp()}. " +
+                            "Previous segment: $PREVIOUS_FILE\n",
                         Charsets.UTF_8
                     )
                 }
-                file.appendText(content + "\n", Charsets.UTF_8)
+
+                current.appendText(
+                    content + "\n",
+                    Charsets.UTF_8
+                )
             } catch (e: Exception) {
                 try {
-                    file.appendText(
-                        "\nLOG_WRITE_FAILURE ${e.javaClass.simpleName}\n"
+                    current.appendText(
+                        "\nLOG_WRITE_FAILURE " +
+                            "${e.javaClass.simpleName}: ${clean(e.message)}\n"
                     )
-                } catch (_: Exception) {}
+                } catch (_: Exception) {
+                    // No further recovery is possible if storage is unavailable.
+                }
             }
         }
     }
 
-    private fun textValue(value: String?, includeText: Boolean): String {
+    private fun textValue(
+        value: String?,
+        includeText: Boolean
+    ): String {
         if (value.isNullOrBlank()) return "(empty)"
-        if (!includeText) return "[REDACTED length=${value.length}]"
+        if (!includeText) {
+            return "[REDACTED length=${value.length}]"
+        }
         return clean(value)
     }
 
     private fun clean(value: String?): String {
         if (value == null) return "(null)"
+
         return value
             .replace("\n", "\\n")
             .replace("\r", "\\r")
@@ -316,13 +469,27 @@ object DiagnosticsLogger {
         ).format(Date())
 
     private fun eventType(type: Int): String = when (type) {
-        AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED -> "WINDOW_STATE_CHANGED"
-        AccessibilityEvent.TYPE_WINDOW_CONTENT_CHANGED -> "WINDOW_CONTENT_CHANGED"
-        AccessibilityEvent.TYPE_VIEW_SELECTED -> "VIEW_SELECTED"
-        AccessibilityEvent.TYPE_VIEW_CLICKED -> "VIEW_CLICKED"
-        AccessibilityEvent.TYPE_VIEW_FOCUSED -> "VIEW_FOCUSED"
-        AccessibilityEvent.TYPE_VIEW_SCROLLED -> "VIEW_SCROLLED"
-        AccessibilityEvent.TYPE_WINDOWS_CHANGED -> "WINDOWS_CHANGED"
+        AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED ->
+            "WINDOW_STATE_CHANGED"
+
+        AccessibilityEvent.TYPE_WINDOW_CONTENT_CHANGED ->
+            "WINDOW_CONTENT_CHANGED"
+
+        AccessibilityEvent.TYPE_VIEW_SELECTED ->
+            "VIEW_SELECTED"
+
+        AccessibilityEvent.TYPE_VIEW_CLICKED ->
+            "VIEW_CLICKED"
+
+        AccessibilityEvent.TYPE_VIEW_FOCUSED ->
+            "VIEW_FOCUSED"
+
+        AccessibilityEvent.TYPE_VIEW_SCROLLED ->
+            "VIEW_SCROLLED"
+
+        AccessibilityEvent.TYPE_WINDOWS_CHANGED ->
+            "WINDOWS_CHANGED"
+
         else -> "OTHER($type)"
     }
 }
