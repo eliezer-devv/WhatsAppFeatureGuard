@@ -76,8 +76,7 @@ class WhatsAppAccessibilityService : AccessibilityService() {
 
     private val lockoutCountdownRunnable = Runnable {
         if (serviceActive) {
-            val prefs =
-                getSharedPreferences(PREFS_NAME, MODE_PRIVATE)
+            val prefs = getSharedPreferences(PREFS_NAME, MODE_PRIVATE)
             val until = prefs.getLong(COOLDOWN_UNTIL, 0L)
 
             if (until > System.currentTimeMillis()) {
@@ -94,8 +93,7 @@ class WhatsAppAccessibilityService : AccessibilityService() {
         backOutRunnable = Runnable {
             if (!serviceActive) return@Runnable
 
-            val reason =
-                pendingLockoutReason ?: return@Runnable
+            val reason = pendingLockoutReason ?: return@Runnable
 
             val root = rootInActiveWindow
             val foregroundPackage = try {
@@ -130,8 +128,7 @@ class WhatsAppAccessibilityService : AccessibilityService() {
             }
 
             if (backPressCount < MAX_BACK_PRESSES) {
-                val accepted =
-                    performGlobalAction(GLOBAL_ACTION_BACK)
+                val accepted = performGlobalAction(GLOBAL_ACTION_BACK)
                 backPressCount++
 
                 DiagnosticsLogger.event(
@@ -248,8 +245,7 @@ class WhatsAppAccessibilityService : AccessibilityService() {
         val blockChannels = BuildConfig.BLOCK_CHANNELS
         val overlayStatus = BuildConfig.BLOCK_STATUS
         val overlayChannels = BuildConfig.BLOCK_CHANNELS
-        val diagnosticMode =
-            prefs.getBoolean(DIAGNOSTIC_MODE, false)
+        val diagnosticMode = prefs.getBoolean(DIAGNOSTIC_MODE, false)
 
         val now = System.currentTimeMillis()
         val cooldownUntil = prefs.getLong(COOLDOWN_UNTIL, 0L)
@@ -303,10 +299,7 @@ class WhatsAppAccessibilityService : AccessibilityService() {
 
             if (rootRetryCount < MAX_ROOT_RETRIES) {
                 handler.removeCallbacks(rootRetryRunnable)
-                handler.postDelayed(
-                    rootRetryRunnable,
-                    ROOT_RETRY_MS
-                )
+                handler.postDelayed(rootRetryRunnable, ROOT_RETRY_MS)
             } else {
                 DiagnosticsLogger.event(
                     this,
@@ -333,14 +326,9 @@ class WhatsAppAccessibilityService : AccessibilityService() {
             val statusViewerDetected = isStatusViewer(root)
             val channelsScreenDetected = isChannelsScreen(root)
             val updatesListBounds = findUpdatesListBounds(root)
-            val channelsHeadingBounds =
-                findChannelsHeadingBounds(root)
+            val channelsHeadingBounds = findChannelsHeadingBounds(root)
 
-            updateOverlays(
-                root,
-                overlayStatus,
-                overlayChannels
-            )
+            updateOverlays(root, overlayStatus, overlayChannels)
 
             lastDetectionSummary = buildString {
                 append("Status viewer: ")
@@ -361,9 +349,7 @@ class WhatsAppAccessibilityService : AccessibilityService() {
                     .append(blockChannels)
             }
 
-            if (
-                lastDetectionSummary != lastLoggedDetectionSummary
-            ) {
+            if (lastDetectionSummary != lastLoggedDetectionSummary) {
                 DiagnosticsLogger.event(
                     this,
                     "SCREEN_DETECTION",
@@ -374,8 +360,7 @@ class WhatsAppAccessibilityService : AccessibilityService() {
                     lastCaptureStatus = lastDetectionSummary
                 }
 
-                lastLoggedDetectionSummary =
-                    lastDetectionSummary
+                lastLoggedDetectionSummary = lastDetectionSummary
             }
 
             if (diagnosticMode && event != null) {
@@ -387,14 +372,11 @@ class WhatsAppAccessibilityService : AccessibilityService() {
                 )
             }
 
-            val statusViewer =
-                blockStatus && statusViewerDetected
-            val channelsScreen =
-                blockChannels && channelsScreenDetected
+            val statusViewer = blockStatus && statusViewerDetected
+            val channelsScreen = blockChannels && channelsScreenDetected
 
             if (statusViewer || channelsScreen) {
-                val reason =
-                    if (statusViewer) "Status" else "Channels"
+                val reason = if (statusViewer) "Status" else "Channels"
 
                 DiagnosticsLogger.event(
                     this,
@@ -407,8 +389,7 @@ class WhatsAppAccessibilityService : AccessibilityService() {
                 return
             }
         } catch (e: Exception) {
-            lastCaptureStatus =
-                "Service error: ${e.javaClass.simpleName}"
+            lastCaptureStatus = "Service error: ${e.javaClass.simpleName}"
 
             DiagnosticsLogger.failure(
                 this,
@@ -459,8 +440,7 @@ class WhatsAppAccessibilityService : AccessibilityService() {
         )
 
         removeAllOverlays()
-        lastCaptureStatus =
-            "$reason opened; backing out of WhatsApp"
+        lastCaptureStatus = "$reason opened; backing out of WhatsApp"
 
         val accepted = performGlobalAction(GLOBAL_ACTION_BACK)
 
@@ -474,10 +454,7 @@ class WhatsAppAccessibilityService : AccessibilityService() {
         backPressCount++
 
         handler.removeCallbacks(backOutRunnable)
-        handler.postDelayed(
-            backOutRunnable,
-            BACK_PRESS_INTERVAL_MS
-        )
+        handler.postDelayed(backOutRunnable, BACK_PRESS_INTERVAL_MS)
     }
 
     private fun beginLockoutCountdown(reason: String) {
@@ -500,8 +477,7 @@ class WhatsAppAccessibilityService : AccessibilityService() {
             .putLong(COOLDOWN_UNTIL, until)
             .apply()
 
-        lastCaptureStatus =
-            "$reason opened; WhatsApp locked for 10 seconds"
+        lastCaptureStatus = "$reason opened; WhatsApp locked for 10 seconds"
 
         updateLockoutNotification(until)
         val homeAccepted = performGlobalAction(GLOBAL_ACTION_HOME)
@@ -516,8 +492,7 @@ class WhatsAppAccessibilityService : AccessibilityService() {
     private fun createLockoutNotificationChannel() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             val manager =
-                getSystemService(NOTIFICATION_SERVICE)
-                    as NotificationManager
+                getSystemService(NOTIFICATION_SERVICE) as NotificationManager
 
             val channel = NotificationChannel(
                 NOTIFICATION_CHANNEL_ID,
@@ -543,23 +518,16 @@ class WhatsAppAccessibilityService : AccessibilityService() {
             return
         }
 
-        val secondsRemaining =
-            ((remainingMs + 999L) / 1000L).toInt()
+        val secondsRemaining = ((remainingMs + 999L) / 1000L).toInt()
 
         try {
             createLockoutNotificationChannel()
 
             val manager =
-                getSystemService(NOTIFICATION_SERVICE)
-                    as NotificationManager
+                getSystemService(NOTIFICATION_SERVICE) as NotificationManager
 
-            val builder = if (
-                Build.VERSION.SDK_INT >= Build.VERSION_CODES.O
-            ) {
-                Notification.Builder(
-                    this,
-                    NOTIFICATION_CHANNEL_ID
-                )
+            val builder = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                Notification.Builder(this, NOTIFICATION_CHANNEL_ID)
             } else {
                 @Suppress("DEPRECATION")
                 Notification.Builder(this)
@@ -624,8 +592,7 @@ class WhatsAppAccessibilityService : AccessibilityService() {
 
         try {
             val manager =
-                getSystemService(NOTIFICATION_SERVICE)
-                    as NotificationManager
+                getSystemService(NOTIFICATION_SERVICE) as NotificationManager
             manager.cancel(NOTIFICATION_ID)
         } catch (e: Exception) {
             DiagnosticsLogger.failure(
@@ -656,6 +623,9 @@ class WhatsAppAccessibilityService : AccessibilityService() {
         val updatesList = findUpdatesListBounds(root)
         val channelsStart = findChannelsHeadingBounds(root)
 
+        // Overlays are permitted only on the Updates list itself.
+        // A Channels discovery screen or a Status viewer must never
+        // receive these overlays, even if a stale Updates node is present.
         val onUpdatesList =
             updatesList != null &&
                 !isStatusViewer(root) &&
@@ -829,8 +799,7 @@ class WhatsAppAccessibilityService : AccessibilityService() {
                     "exception=${e.javaClass.name}; message=${e.message}"
             )
 
-            lastCaptureStatus =
-                "Overlay error: ${e.javaClass.simpleName}"
+            lastCaptureStatus = "Overlay error: ${e.javaClass.simpleName}"
         }
     }
 
@@ -886,7 +855,8 @@ class WhatsAppAccessibilityService : AccessibilityService() {
             node.viewIdResourceName?.contains(
                 expected,
                 ignoreCase = true
-            ) == true
+            ) == true &&
+            node.isVisibleToUser
         ) {
             val bounds = Rect()
             node.getBoundsInScreen(bounds)
@@ -918,8 +888,11 @@ class WhatsAppAccessibilityService : AccessibilityService() {
             node.contentDescription?.toString()?.trim().orEmpty()
 
         if (
-            text.equals(expected, ignoreCase = true) ||
-            description.equals(expected, ignoreCase = true)
+            node.isVisibleToUser &&
+            (
+                text.equals(expected, ignoreCase = true) ||
+                    description.equals(expected, ignoreCase = true)
+                )
         ) {
             val bounds = Rect()
             node.getBoundsInScreen(bounds)
@@ -981,8 +954,9 @@ class WhatsAppAccessibilityService : AccessibilityService() {
     private fun isChannelsScreen(
         root: AccessibilityNodeInfo
     ): Boolean {
-        if (findUpdatesListBounds(root) != null) return false
-
+        // Do not reject this screen just because an Updates-list node
+        // is also present in the accessibility tree. Some WhatsApp
+        // versions retain stale or hidden nodes during navigation.
         val directoryIds =
             containsViewId(root, "newsletter_directory_row_container") ||
                 containsViewId(root, "newsletter_name") ||
@@ -1003,7 +977,8 @@ class WhatsAppAccessibilityService : AccessibilityService() {
     private fun isChannelsDiscoveryScreen(
         root: AccessibilityNodeInfo
     ): Boolean {
-        if (findUpdatesListBounds(root) != null) return false
+        // A positive Channels discovery marker takes precedence over a
+        // potentially stale Updates-list node.
         if (containsViewId(root, "directory_category_list")) return true
 
         val exploreHeading =
