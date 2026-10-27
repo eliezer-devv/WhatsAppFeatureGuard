@@ -951,6 +951,7 @@ class WhatsAppAccessibilityService : AccessibilityService() {
         return replyAction && statusAction
     }
 
+    
     private fun isChannelsScreen(
         root: AccessibilityNodeInfo
     ): Boolean {
@@ -969,31 +970,24 @@ class WhatsAppAccessibilityService : AccessibilityService() {
                 containsText(root, "Discover channels") ||
                 containsText(root, "Search channels")
 
+        // Detect an opened channel, not just the channel directory.
+        // These markers were found in the diagnostic from the other phone.
+        val openedChannelHeader =
+            containsText(root, "Public channel") &&
+                containsViewId(root, "conversation_contact_name")
+
+        val openedChannelPosts =
+            containsViewId(
+                root,
+                "newsletter_quick_forwarding_pill_container_key"
+            ) &&
+                containsViewId(root, "conversation_contact_name")
+
         return directoryIds ||
             channelActions ||
-            isChannelsDiscoveryScreen(root)
-    }
-
-    private fun isChannelsDiscoveryScreen(
-        root: AccessibilityNodeInfo
-    ): Boolean {
-        // A positive Channels discovery marker takes precedence over a
-        // potentially stale Updates-list node.
-        if (containsViewId(root, "directory_category_list")) return true
-
-        val exploreHeading =
-            containsText(root, "Explore channels") ||
-                containsText(root, "Explore")
-
-        val discoveryContent =
-            containsText(root, "Recommended") ||
-                containsText(root, "Popular") ||
-                containsText(root, "Verified") ||
-                containsText(root, "Search channels") ||
-                containsText(root, "Find channels") ||
-                containsText(root, "Discover channels")
-
-        return exploreHeading && discoveryContent
+            isChannelsDiscoveryScreen(root) ||
+            openedChannelHeader ||
+            openedChannelPosts
     }
 
     private fun findUpdatesListBounds(
