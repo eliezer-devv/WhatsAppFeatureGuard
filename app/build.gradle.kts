@@ -11,8 +11,8 @@ android {
         applicationId = "com.example.whatsappfeatureguard"
         minSdk = 26
         targetSdk = 35
-        versionCode = 6
-        versionName = "0.6.0"
+        versionCode = 7
+        versionName = "0.7.0"
     }
 
     buildFeatures {
@@ -26,14 +26,36 @@ android {
             dimension = "featureSet"
             buildConfigField("boolean", "BLOCK_STATUS", "false")
             buildConfigField("boolean", "BLOCK_CHANNELS", "true")
-            resValue("string", "app_name", "WhatsApp Feature Guard - Channels Only")
+            buildConfigField("boolean", "CUSTOM_TESTING", "false")
+            resValue(
+                "string",
+                "app_name",
+                "WhatsApp Feature Guard - Channels Only"
+            )
         }
 
         create("statusAndChannels") {
             dimension = "featureSet"
             buildConfigField("boolean", "BLOCK_STATUS", "true")
             buildConfigField("boolean", "BLOCK_CHANNELS", "true")
-            resValue("string", "app_name", "WhatsApp Feature Guard - Status + Channels")
+            buildConfigField("boolean", "CUSTOM_TESTING", "false")
+            resValue(
+                "string",
+                "app_name",
+                "WhatsApp Feature Guard - Status + Channels"
+            )
+        }
+
+        create("customTesting") {
+            dimension = "featureSet"
+            buildConfigField("boolean", "BLOCK_STATUS", "false")
+            buildConfigField("boolean", "BLOCK_CHANNELS", "false")
+            buildConfigField("boolean", "CUSTOM_TESTING", "true")
+            resValue(
+                "string",
+                "app_name",
+                "WhatsApp Feature Guard - Custom Testing"
+            )
         }
     }
 
