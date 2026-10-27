@@ -14,6 +14,7 @@ import android.provider.Settings
 import android.view.Gravity
 import android.view.ViewGroup
 import android.widget.Button
+import android.widget.CheckBox
 import android.widget.LinearLayout
 import android.widget.ScrollView
 import android.widget.TextView
@@ -33,6 +34,14 @@ class MainActivity : Activity() {
         private const val EXPORT_LOG_FILE =
             "whatsapp_diagnostic_export.txt"
         private const val REQUEST_NOTIFICATIONS = 1001
+
+        private const val TEST_BLOCK_STATUS = "test_block_status"
+        private const val TEST_BLOCK_CHANNELS = "test_block_channels"
+        private const val TEST_BLOCK_CHANNELS_DISCOVERY =
+            "test_block_channels_discovery"
+        private const val TEST_OVERLAY_STATUS = "test_overlay_status"
+        private const val TEST_OVERLAY_CHANNELS = "test_overlay_channels"
+        private const val TEST_LOCKOUT_ENABLED = "test_lockout_enabled"
     }
 
     private lateinit var statusText: TextView
@@ -80,9 +89,17 @@ class MainActivity : Activity() {
         outer.addView(title, matchWrap())
 
         val explanation = TextView(this).apply {
-            text = "This build has a fixed feature configuration. " +
-                "Use this screen to enable Accessibility and reduce battery restrictions. " +
-                "Android does not allow an ordinary app to silently re-enable its own Accessibility service."
+            text = if (BuildConfig.CUSTOM_TESTING) {
+                "Custom Testing mode: use the independent switches below to " +
+                    "test each restriction. All six switches start OFF. " +
+                    "Changes are saved on this device. Use this screen to " +
+                    "enable Accessibility and reduce battery restrictions."
+            } else {
+                "This build has a fixed feature configuration. " +
+                    "Use this screen to enable Accessibility and reduce battery " +
+                    "restrictions. Android does not allow an ordinary app to " +
+                    "silently re-enable its own Accessibility service."
+            }
             textSize = 16f
             setTextColor(0xFF333333.toInt())
             setPadding(0, dp(12), 0, dp(16))
@@ -90,16 +107,71 @@ class MainActivity : Activity() {
         outer.addView(explanation, matchWrap())
 
         val featureMode = TextView(this).apply {
-            text = if (BuildConfig.BLOCK_STATUS) {
-                "Build mode: Status and Channels blocked, with both overlays."
-            } else {
-                "Build mode: Channels blocked, with the Channels overlay. Status remains accessible."
+            text = when {
+                BuildConfig.CUSTOM_TESTING ->
+                    "Build mode: Custom Testing — configure each feature below."
+                BuildConfig.BLOCK_STATUS ->
+                    "Build mode: Status and Channels blocked, with both overlays."
+                else ->
+                    "Build mode: Channels blocked, with the Channels overlay. Status remains accessible."
             }
             textSize = 16f
             setTextColor(0xFF333333.toInt())
-            setPadding(0, dp(8), 0, dp(16))
+            setPadding(0, dp(8), 0, dp(12))
         }
         outer.addView(featureMode, matchWrap())
+
+        if (BuildConfig.CUSTOM_TESTING) {
+            val settingsHeading = TextView(this).apply {
+                text = "Custom feature controls"
+                textSize = 19f
+                setTypeface(null, Typeface.BOLD)
+                setTextColor(0xFF202020.toInt())
+                setPadding(0, dp(8), 0, dp(8))
+            }
+            outer.addView(settingsHeading, matchWrap())
+
+            addFeatureCheckbox(
+                outer,
+                "Block Status viewer",
+                TEST_BLOCK_STATUS
+            )
+            addFeatureCheckbox(
+                outer,
+                "Block opened Channels",
+                TEST_BLOCK_CHANNELS
+            )
+            addFeatureCheckbox(
+                outer,
+                "Block Channels discovery page (Explore / Find channels)",
+                TEST_BLOCK_CHANNELS_DISCOVERY
+            )
+            addFeatureCheckbox(
+                outer,
+                "Show Status overlay on Updates tab",
+                TEST_OVERLAY_STATUS
+            )
+            addFeatureCheckbox(
+                outer,
+                "Show Channels overlay on Updates tab",
+                TEST_OVERLAY_CHANNELS
+            )
+            addFeatureCheckbox(
+                outer,
+                "Enable 10-second lockout",
+                TEST_LOCKOUT_ENABLED
+            )
+
+            val note = TextView(this).apply {
+                text = "Note: these switches configure the requested behavior. " +
+                    "The Accessibility service must also be updated to apply " +
+                    "each setting independently."
+                textSize = 13f
+                setTextColor(0xFF555555.toInt())
+                setPadding(0, dp(4), 0, dp(12))
+            }
+            outer.addView(note, matchWrap())
+        }
 
         statusText = TextView(this).apply {
             textSize = 15f
@@ -152,6 +224,39 @@ class MainActivity : Activity() {
         }
 
         setContentView(scroll)
+    }
+
+    private fun addFeatureCheckbox(
+        parent: LinearLayout,
+        label: String,
+        preferenceKey: String
+    ) {
+        val prefs = getSharedPreferences(PREFS_NAME, MODE_PRIVATE)
+
+        val checkBox = CheckBox(this).apply {
+            text = label
+            textSize = 15f
+            setTextColor(0xFF222222.toInt())
+            isChecked = prefs.getBoolean(preferenceKey, false)
+            setPadding(0, dp(4), 0, dp(4))
+
+            setOnCheckedChangeListener { _, checked ->
+                prefs.edit()
+                    .putBoolean(preferenceKey, checked)
+                    .apply()
+                refreshStatus()
+            }
+        }
+
+        val params = LinearLayout.LayoutParams(
+            ViewGroup.LayoutParams.MATCH_PARENT,
+            ViewGroup.LayoutParams.WRAP_CONTENT
+        ).apply {
+            topMargin = dp(2)
+            bottomMargin = dp(2)
+        }
+
+        parent.addView(checkBox, params)
     }
 
     private fun setLoggingMode(full: Boolean) {
@@ -245,22 +350,65 @@ class MainActivity : Activity() {
             else -> "BASIC"
         }
 
+        val blockStatus = if (BuildConfig.CUSTOM_TESTING) {
+            prefs.getBoolean(TEST_BLOCK_STATUS, false)
+        } else {
+            BuildConfig.BLOCK_STATUS
+        }
+
+        val blockChannels = if (BuildConfig.CUSTOM_TESTING) {
+            prefs.getBoolean(TEST_BLOCK_CHANNELS, false)
+        } else {
+            BuildConfig.BLOCK_CHANNELS
+        }
+
+        val blockDiscovery = if (BuildConfig.CUSTOM_TESTING) {
+            prefs.getBoolean(TEST_BLOCK_CHANNELS_DISCOVERY, false)
+        } else {
+            BuildConfig.BLOCK_CHANNELS
+        }
+
+        val overlayStatus = if (BuildConfig.CUSTOM_TESTING) {
+            prefs.getBoolean(TEST_OVERLAY_STATUS, false)
+        } else {
+            BuildConfig.BLOCK_STATUS
+        }
+
+        val overlayChannels = if (BuildConfig.CUSTOM_TESTING) {
+            prefs.getBoolean(TEST_OVERLAY_CHANNELS, false)
+        } else {
+            BuildConfig.BLOCK_CHANNELS
+        }
+
+        val lockoutEnabled = if (BuildConfig.CUSTOM_TESTING) {
+            prefs.getBoolean(TEST_LOCKOUT_ENABLED, false)
+        } else {
+            true
+        }
+
         statusText.text = buildString {
             appendLine(
-                "Block Status: " +
-                    if (BuildConfig.BLOCK_STATUS) "ON" else "OFF"
+                "Block Status: " + if (blockStatus) "ON" else "OFF"
             )
             appendLine(
-                "Block Channels: " +
-                    if (BuildConfig.BLOCK_CHANNELS) "ON" else "OFF"
+                "Block opened Channels: " +
+                    if (blockChannels) "ON" else "OFF"
+            )
+            appendLine(
+                "Block Channels discovery: " +
+                    if (blockDiscovery) "ON" else "OFF"
             )
             appendLine(
                 "Overlay Status: " +
-                    if (BuildConfig.BLOCK_STATUS) "ON" else "OFF"
+                    if (overlayStatus) "ON" else "OFF"
             )
             appendLine(
                 "Overlay Channels: " +
-                    if (BuildConfig.BLOCK_CHANNELS) "ON" else "OFF"
+                    if (overlayChannels) "ON" else "OFF"
+            )
+            appendLine(
+                "10-second lockout: " +
+                    if (lockoutEnabled) "ON" else "OFF"
             )
             appendLine("Logging mode: $loggingMode")
             appendLine(
