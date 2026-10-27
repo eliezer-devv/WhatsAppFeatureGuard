@@ -28,10 +28,14 @@ jobs:
         with:
           gradle-version: '8.9'
 
-      - name: Build both APK variants
-        run: gradle assembleChannelsOnlyDebug assembleStatusAndChannelsDebug --stacktrace
+      - name: Build all three APK variants
+        run: >
+          gradle assembleChannelsOnlyDebug
+          assembleStatusAndChannelsDebug
+          assembleCustomTestingDebug
+          --stacktrace
 
-      - name: Sign both APKs with permanent key
+      - name: Sign all APKs with permanent key
         env:
           KEYSTORE_BASE64: ${{ secrets.WFG_KEYSTORE_BASE64 }}
           KEYSTORE_PASSWORD: ${{ secrets.WFG_KEYSTORE_PASSWORD }}
@@ -60,6 +64,7 @@ jobs:
           APK_FILES=(
             app/build/outputs/apk/channelsOnly/debug/app-channelsOnly-debug.apk
             app/build/outputs/apk/statusAndChannels/debug/app-statusAndChannels-debug.apk
+            app/build/outputs/apk/customTesting/debug/app-customTesting-debug.apk
           )
 
           for APK in "${APK_FILES[@]}"; do
@@ -72,7 +77,7 @@ jobs:
               --ks "$KEYSTORE_PATH" \
               --ks-key-alias whatsappfeatureguard \
               --ks-pass env:KEYSTORE_PASSWORD \
-              --key-pass env:KEYSTORE_PASSWORD \
+              --key-pass env:KEY_PASSWORD \
               --out "$APK.signed" \
               "$APK"
 
@@ -81,17 +86,18 @@ jobs:
             echo "Successfully signed and verified: $APK"
           done
 
-      - name: Upload both APKs as workflow artifacts
+      - name: Upload all three APKs as workflow artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: WhatsAppFeatureGuard-two-variants
+          name: WhatsAppFeatureGuard-three-variants
           path: |
             app/build/outputs/apk/channelsOnly/debug/*.apk
             app/build/outputs/apk/statusAndChannels/debug/*.apk
+            app/build/outputs/apk/customTesting/debug/*.apk
           if-no-files-found: error
           retention-days: 14
 
-      - name: Publish both APKs to GitHub Release
+      - name: Publish all three APKs to GitHub Release
         uses: softprops/action-gh-release@v2
         with:
           tag_name: build-${{ github.run_number }}
@@ -101,12 +107,16 @@ jobs:
 
             - app-channelsOnly-debug.apk: Channels blocked; Status remains accessible.
             - app-statusAndChannels-debug.apk: Status and Channels blocked.
+            - app-customTesting-debug.apk: Six independent feature switches, initially OFF.
 
-            The launcher icon is visible for standalone setup and recovery. Enable Accessibility in the app setup screen. Request the battery-optimization exemption and choose Unrestricted under App info → Battery where available. Android does not permit silent self-reactivation of Accessibility.
+            All variants share the same application ID, so only one can be installed at a time.
+
+            The launcher icon is visible for setup and recovery. Enable Accessibility in the app setup screen. Request the battery-optimization exemption and choose Unrestricted under App info → Battery where available.
           prerelease: false
           make_latest: true
           files: |
-            app/build/outputs/apk/channelsOnly/debug/*.apk
-            app/build/outputs/apk/statusAndChannels/debug/*.apk
+            app/build/outputs/apk/channelsOnly/debug/app-channelsOnly-debug.apk
+            app/build/outputs/apk/statusAndChannels/debug/app-statusAndChannels-debug.apk
+            app/build/outputs/apk/customTesting/debug/app-customTesting-debug.apk
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
