@@ -123,7 +123,13 @@ class WhatsAppAccessibilityService : AccessibilityService() {
                         "backPresses=$backPressCount"
                 )
                 pendingLockoutReason = null
-                beginLockoutCountdown(reason)
+                
+                                if (isLockoutEnabledNow()) {
+                    beginLockoutCountdown(reason)
+                } else {
+                    lastCaptureStatus =
+                        "$reason opened; returned without lockout"
+                                }
                 return@Runnable
             }
 
@@ -151,7 +157,12 @@ class WhatsAppAccessibilityService : AccessibilityService() {
                         "starting cooldown"
                 )
                 pendingLockoutReason = null
-                beginLockoutCountdown(reason)
+                                if (isLockoutEnabledNow()) {
+                    beginLockoutCountdown(reason)
+                } else {
+                    lastCaptureStatus =
+                        "$reason detected; lockout disabled"
+                                }
             }
         }
     }
@@ -240,12 +251,59 @@ class WhatsAppAccessibilityService : AccessibilityService() {
     ) {
         if (!serviceActive) return
 
-        val prefs = getSharedPreferences(PREFS_NAME, MODE_PRIVATE)
-        val blockStatus = BuildConfig.BLOCK_STATUS
-        val blockChannels = BuildConfig.BLOCK_CHANNELS
-        val overlayStatus = BuildConfig.BLOCK_STATUS
-        val overlayChannels = BuildConfig.BLOCK_CHANNELS
+                val prefs = getSharedPreferences(PREFS_NAME, MODE_PRIVATE)
+        val customTesting = BuildConfig.CUSTOM_TESTING
+
+        val blockStatus = if (customTesting) {
+            prefs.getBoolean("test_block_status", false)
+        } else {
+            BuildConfig.BLOCK_STATUS
+        }
+
+        val blockChannels = if (customTesting) {
+            prefs.getBoolean("test_block_channels", false)
+        } else {
+            BuildConfig.BLOCK_CHANNELS
+        }
+
+        val blockChannelsDiscovery = if (customTesting) {
+            prefs.getBoolean("test_block_channels_discovery", false)
+        } else {
+            BuildConfig.BLOCK_CHANNELS
+        }
+
+        val overlayStatus = if (customTesting) {
+            prefs.getBoolean("test_overlay_status", false)
+        } else {
+            BuildConfig.BLOCK_STATUS
+        }
+
+        val overlayChannels = if (customTesting) {
+            prefs.getBoolean("test_overlay_channels", false)
+        } else {
+            BuildConfig.BLOCK_CHANNELS
+        }
+
+        val lockoutEnabled = if (customTesting) {
+            prefs.getBoolean("test_lockout_enabled", false)
+        } else {
+            true
+        }
+
         val diagnosticMode = prefs.getBoolean(DIAGNOSTIC_MODE, false)
+
+        if (!lockoutEnabled) {
+            handler.removeCallbacks(lockoutCountdownRunnable)
+
+            if (prefs.getLong(COOLDOWN_UNTIL, 0L) != 0L) {
+                finishLockout()
+            }
+
+            if (pendingLockoutReason != null) {
+                handler.removeCallbacks(backOutRunnable)
+                pendingLockoutReason = null
+            }
+        }
 
         val now = System.currentTimeMillis()
         val cooldownUntil = prefs.getLong(COOLDOWN_UNTIL, 0L)
@@ -271,9 +329,10 @@ class WhatsAppAccessibilityService : AccessibilityService() {
             return
         }
 
-        if (
+                if (
             !blockStatus &&
             !blockChannels &&
+            !blockChannelsDiscovery &&
             !overlayStatus &&
             !overlayChannels &&
             !diagnosticMode
@@ -325,6 +384,8 @@ class WhatsAppAccessibilityService : AccessibilityService() {
 
             val statusViewerDetected = isStatusViewer(root)
             val channelsScreenDetected = isChannelsScreen(root)
+            val channelsDiscoveryDetected =
+                isChannelsDiscoveryScreen(root)
             val updatesListBounds = findUpdatesListBounds(root)
             val channelsHeadingBounds = findChannelsHeadingBounds(root)
 
@@ -335,6 +396,11 @@ class WhatsAppAccessibilityService : AccessibilityService() {
                     .append(if (statusViewerDetected) "MATCH" else "no match")
                 append("; Channels screen: ")
                     .append(if (channelsScreenDetected) "MATCH" else "no match")
+                append("; Channels discovery: ")
+                    .append(
+                        if (channelsDiscoveryDetected) "MATCH"
+                        else "no match"
+                    )
                 append("; Updates list bounds: ")
                     .append(if (updatesListBounds != null) "found" else "not found")
                 append("; Channels heading bounds: ")
@@ -374,10 +440,16 @@ class WhatsAppAccessibilityService : AccessibilityService() {
 
             val statusViewer = blockStatus && statusViewerDetected
             val channelsScreen = blockChannels && channelsScreenDetected
+            val channelsDiscovery =
+                blockChannelsDiscovery && channelsDiscoveryDetected
 
-            if (statusViewer || channelsScreen) {
-                val reason = if (statusViewer) "Status" else "Channels"
-
+            if (statusViewer || channelsScreen || channelsDiscovery) {
+                val reason = when {
+                    statusViewer -> "Status"
+                    channelsScreen -> "Channels"
+                    else -> "Channels discovery"
+                }
+                
                 DiagnosticsLogger.event(
                     this,
                     "RESTRICTED_SCREEN_MATCH",
@@ -407,7 +479,13 @@ class WhatsAppAccessibilityService : AccessibilityService() {
     // ---------------------------------------------------------------
     // REPEATED BACK PRESSES AND TEN-SECOND LOCKOUT
     // ---------------------------------------------------------------
+    private fun isLockoutEnabledNow(): Boolean {
+        if (!BuildConfig.CUSTOM_TESTING) return true
 
+        return getSharedPreferences(PREFS_NAME, MODE_PRIVATE)
+            .getBoolean("test_lockout_enabled", false)
+    }
+    
     private fun startLockout(reason: String) {
         val prefs = getSharedPreferences(PREFS_NAME, MODE_PRIVATE)
         val existingUntil = prefs.getLong(COOLDOWN_UNTIL, 0L)
