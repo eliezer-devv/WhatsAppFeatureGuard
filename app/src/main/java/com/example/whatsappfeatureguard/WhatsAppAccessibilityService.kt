@@ -951,44 +951,45 @@ class WhatsAppAccessibilityService : AccessibilityService() {
         return replyAction && statusAction
     }
 
-    
     private fun isChannelsScreen(
-        root: AccessibilityNodeInfo
-    ): Boolean {
-        // Do not reject this screen just because an Updates-list node
-        // is also present in the accessibility tree. Some WhatsApp
-        // versions retain stale or hidden nodes during navigation.
-        val directoryIds =
-            containsViewId(root, "newsletter_directory_row_container") ||
-                containsViewId(root, "newsletter_name") ||
-                containsViewId(root, "directory_category_list")
+    root: AccessibilityNodeInfo
+): Boolean {
+    // Detect an opened channel conversation/post screen only.
+    // The discovery page is detected separately below.
+    val openedChannelHeader =
+        containsText(root, "Public channel") &&
+            containsViewId(root, "conversation_contact_name")
 
-        val channelActions =
-            containsText(root, "FOLLOW CHANNEL") ||
-                containsText(root, "Follow channel") ||
-                containsText(root, "Find channels") ||
-                containsText(root, "Discover channels") ||
-                containsText(root, "Search channels")
+    val openedChannelPosts =
+        containsViewId(
+            root,
+            "newsletter_quick_forwarding_pill_container_key"
+        ) &&
+            containsViewId(root, "conversation_contact_name")
 
-        // Detect an opened channel, not just the channel directory.
-        // These markers were found in the diagnostic from the other phone.
-        val openedChannelHeader =
-            containsText(root, "Public channel") &&
-                containsViewId(root, "conversation_contact_name")
+    return openedChannelHeader || openedChannelPosts
+}
 
-        val openedChannelPosts =
-            containsViewId(
-                root,
-                "newsletter_quick_forwarding_pill_container_key"
-            ) &&
-                containsViewId(root, "conversation_contact_name")
+private fun isChannelsDiscoveryScreen(
+    root: AccessibilityNodeInfo
+): Boolean {
+    // IDs associated with the channel directory/discovery screen.
+    val directoryIds =
+        containsViewId(root, "newsletter_directory_row_container") ||
+            containsViewId(root, "newsletter_name") ||
+            containsViewId(root, "directory_category_list")
 
-        return directoryIds ||
-            channelActions ||
-            isChannelsDiscoveryScreen(root) ||
-            openedChannelHeader ||
-            openedChannelPosts
-    }
+    // Labels associated with finding or following channels.
+    val channelActions =
+        containsText(root, "FOLLOW CHANNEL") ||
+            containsText(root, "Follow channel") ||
+            containsText(root, "Find channels") ||
+            containsText(root, "Discover channels") ||
+            containsText(root, "Search channels") ||
+            containsText(root, "Explore channels")
+
+    return directoryIds || channelActions
+}
 
     private fun findUpdatesListBounds(
         root: AccessibilityNodeInfo
