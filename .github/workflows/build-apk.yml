@@ -1,121 +1,121 @@
 name: Build WhatsApp Feature Guard APKs
 
 on:
-push:
-branches:
-- main
-workflow_dispatch:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
 
 permissions:
-contents: write
+  contents: write
 
 jobs:
-build:
-runs-on: ubuntu-latest
+  build:
+    runs-on: ubuntu-latest
 
-steps:
-  - name: Check out repository
-    uses: actions/checkout@v4
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
 
-  - name: Set up Java 17
-    uses: actions/setup-java@v4
-    with:
-      distribution: temurin
-      java-version: '17'
+      - name: Set up Java 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
 
-  - name: Set up Gradle
-    uses: gradle/actions/setup-gradle@v4
-    with:
-      gradle-version: '8.9'
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.9'
 
-  - name: Build all three APK variants
-    run: >
-      gradle assembleChannelsOnlyDebug
-      assembleStatusAndChannelsDebug
-      assembleCustomTestingDebug
-      --stacktrace
+      - name: Build all three APK variants
+        run: >
+          gradle assembleChannelsOnlyDebug
+          assembleStatusAndChannelsDebug
+          assembleCustomTestingDebug
+          --stacktrace
 
-  - name: Sign all APKs with permanent key
-    env:
-      KEYSTORE_BASE64: ${{ secrets.WFG_KEYSTORE_BASE64 }}
-      KEYSTORE_PASSWORD: ${{ secrets.WFG_KEYSTORE_PASSWORD }}
-    shell: bash
-    run: |
-      set -euo pipefail
+      - name: Sign all APKs with permanent key
+        env:
+          KEYSTORE_BASE64: ${{ secrets.WFG_KEYSTORE_BASE64 }}
+          KEYSTORE_PASSWORD: ${{ secrets.WFG_KEYSTORE_PASSWORD }}
+        shell: bash
+        run: |
+          set -euo pipefail
 
-      if [[ -z "$KEYSTORE_BASE64" || -z "$KEYSTORE_PASSWORD" ]]; then
-        echo "ERROR: One or more signing secrets are missing."
-        exit 1
-      fi
+          if [[ -z "$KEYSTORE_BASE64" || -z "$KEYSTORE_PASSWORD" ]]; then
+            echo "ERROR: One or more signing secrets are missing."
+            exit 1
+          fi
 
-      SDK_ROOT="${ANDROID_HOME:-${ANDROID_SDK_ROOT:-/usr/local/lib/android/sdk}}"
-      APKSIGNER="$(find "$SDK_ROOT/build-tools" -type f -name apksigner 2>/dev/null | sort -V | tail -n 1)"
+          SDK_ROOT="${ANDROID_HOME:-${ANDROID_SDK_ROOT:-/usr/local/lib/android/sdk}}"
+          APKSIGNER="$(find "$SDK_ROOT/build-tools" -type f -name apksigner 2>/dev/null | sort -V | tail -n 1)"
 
-      if [[ -z "$APKSIGNER" || ! -x "$APKSIGNER" ]]; then
-        echo "ERROR: Android apksigner was not found."
-        exit 1
-      fi
+          if [[ -z "$APKSIGNER" || ! -x "$APKSIGNER" ]]; then
+            echo "ERROR: Android apksigner was not found."
+            exit 1
+          fi
 
-      KEYSTORE_PATH="$RUNNER_TEMP/wfg-signing.jks"
-      printf '%s' "$KEYSTORE_BASE64" | base64 --decode > "$KEYSTORE_PATH"
-      trap 'rm -f "$KEYSTORE_PATH"' EXIT
+          KEYSTORE_PATH="$RUNNER_TEMP/wfg-signing.jks"
+          printf '%s' "$KEYSTORE_BASE64" | base64 --decode > "$KEYSTORE_PATH"
+          trap 'rm -f "$KEYSTORE_PATH"' EXIT
 
-      APK_FILES=(
-        app/build/outputs/apk/channelsOnly/debug/app-channelsOnly-debug.apk
-        app/build/outputs/apk/statusAndChannels/debug/app-statusAndChannels-debug.apk
-        app/build/outputs/apk/customTesting/debug/app-customTesting-debug.apk
-      )
+          APK_FILES=(
+            app/build/outputs/apk/channelsOnly/debug/app-channelsOnly-debug.apk
+            app/build/outputs/apk/statusAndChannels/debug/app-statusAndChannels-debug.apk
+            app/build/outputs/apk/customTesting/debug/app-customTesting-debug.apk
+          )
 
-      for APK in "${APK_FILES[@]}"; do
-        if [[ ! -f "$APK" ]]; then
-          echo "ERROR: Expected APK not found: $APK"
-          exit 1
-        fi
+          for APK in "${APK_FILES[@]}"; do
+            if [[ ! -f "$APK" ]]; then
+              echo "ERROR: Expected APK not found: $APK"
+              exit 1
+            fi
 
-        "$APKSIGNER" sign \
-          --ks "$KEYSTORE_PATH" \
-          --ks-key-alias whatsappfeatureguard \
-          --ks-pass env:KEYSTORE_PASSWORD \
-          --key-pass env:KEYSTORE_PASSWORD \
-          --out "$APK.signed" \
-          "$APK"
+            "$APKSIGNER" sign \
+              --ks "$KEYSTORE_PATH" \
+              --ks-key-alias whatsappfeatureguard \
+              --ks-pass env:KEYSTORE_PASSWORD \
+              --key-pass env:KEYSTORE_PASSWORD \
+              --out "$APK.signed" \
+              "$APK"
 
-        mv "$APK.signed" "$APK"
-        "$APKSIGNER" verify --verbose "$APK"
-        echo "Successfully signed and verified: $APK"
-      done
+            mv "$APK.signed" "$APK"
+            "$APKSIGNER" verify --verbose "$APK"
+            echo "Successfully signed and verified: $APK"
+          done
 
-  - name: Upload all three APKs as workflow artifacts
-    uses: actions/upload-artifact@v4
-    with:
-      name: WhatsAppFeatureGuard-three-variants
-      path: |
-        app/build/outputs/apk/channelsOnly/debug/*.apk
-        app/build/outputs/apk/statusAndChannels/debug/*.apk
-        app/build/outputs/apk/customTesting/debug/*.apk
-      if-no-files-found: error
-      retention-days: 14
+      - name: Upload all three APKs as workflow artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: WhatsAppFeatureGuard-three-variants
+          path: |
+            app/build/outputs/apk/channelsOnly/debug/*.apk
+            app/build/outputs/apk/statusAndChannels/debug/*.apk
+            app/build/outputs/apk/customTesting/debug/*.apk
+          if-no-files-found: error
+          retention-days: 14
 
-  - name: Publish all three APKs to GitHub Release
-    uses: softprops/action-gh-release@v2
-    with:
-      tag_name: build-${{ github.run_number }}
-      name: WhatsApp Feature Guard
-      body: |
-        Automatically built from the latest code on the main branch.
+      - name: Publish all three APKs to GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: build-${{ github.run_number }}
+          name: WhatsApp Feature Guard
+          body: |
+            Automatically built from the latest code on the main branch.
 
-        - app-channelsOnly-debug.apk: Channels blocked; Status remains accessible.
-        - app-statusAndChannels-debug.apk: Status and Channels blocked.
-        - app-customTesting-debug.apk: Six independent feature switches, initially OFF.
+            - app-channelsOnly-debug.apk: Channels blocked; Status remains accessible.
+            - app-statusAndChannels-debug.apk: Status and Channels blocked.
+            - app-customTesting-debug.apk: Six independent feature switches, initially OFF.
 
-        All variants share the same application ID, so only one can be installed at a time.
+            All variants share the same application ID, so only one can be installed at a time.
 
-        The launcher icon is visible for setup and recovery. Enable Accessibility in the app setup screen. Request the battery-optimization exemption and choose Unrestricted under App info → Battery where available.
-      prerelease: false
-      make_latest: true
-      files: |
-        app/build/outputs/apk/channelsOnly/debug/app-channelsOnly-debug.apk
-        app/build/outputs/apk/statusAndChannels/debug/app-statusAndChannels-debug.apk
-        app/build/outputs/apk/customTesting/debug/app-customTesting-debug.apk
-    env:
-      GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+            The launcher icon is visible for setup and recovery. Enable Accessibility in the app setup screen. Request the battery-optimization exemption and choose Unrestricted under App info → Battery where available.
+          prerelease: false
+          make_latest: true
+          files: |
+            app/build/outputs/apk/channelsOnly/debug/app-channelsOnly-debug.apk
+            app/build/outputs/apk/statusAndChannels/debug/app-statusAndChannels-debug.apk
+            app/build/outputs/apk/customTesting/debug/app-customTesting-debug.apk
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
