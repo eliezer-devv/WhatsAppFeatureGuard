@@ -75,6 +75,36 @@ object DiagnosticsLogger {
         "key"
     )
 
+    /**
+     * Only these exact, generic WhatsApp labels may appear in the log.
+     * Never log arbitrary text that merely contains one of these words.
+     */
+    private val approvedUiLabels = mapOf(
+        "UPDATES" to "Updates",
+        "CHANNELS" to "Channels",
+        "EXPLORE" to "Explore",
+        "CHATS" to "Chats",
+        "FOLLOW CHANNEL" to "FOLLOW CHANNEL",
+        "FIND CHANNELS" to "Find channels",
+        "STATUS" to "Status",
+        "SEARCH" to "Search"
+    )
+
+    private fun safeUiText(value: CharSequence?): String {
+        if (value.isNullOrBlank()) {
+            return "[OMITTED_FOR_PRIVACY]"
+        }
+
+        val normalized = value
+            .toString()
+            .trim()
+            .replace(Regex("\\s+"), " ")
+            .uppercase(Locale.ROOT)
+
+        return approvedUiLabels[normalized]
+            ?: "[OMITTED_FOR_PRIVACY]"
+    }
+    
     fun routineEnabled(context: Context): Boolean =
         context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
             .getBoolean(ROUTINE_KEY, false)
@@ -186,7 +216,7 @@ object DiagnosticsLogger {
                 appendLine("whatsappVersion=$whatsappVersion")
                 appendLine("routineLogging=${routineEnabled(context)}")
                 appendLine("detailedCapture=${detailedEnabled(context)}")
-                appendLine("uiTextLogging=DISABLED_BY_PRIVACY_POLICY")
+                appendLine("uiTextLogging=APPROVED_LABELS_ONLY")
                 appendLine("maxSamplesPerPattern=$MAX_SAMPLES_PER_PATTERN")
                 appendLine(
                     "maxDistinctTreeOutcomesPerCategory=" +
@@ -198,10 +228,9 @@ object DiagnosticsLogger {
     }
 
     /**
-     * Captures technical accessibility-tree information only.
-     *
-     * Text, content descriptions and hints are always omitted. This remains
-     * true even when the old include-UI-text preference is enabled.
+     * Captures technical accessibility-tree information.
+     * Only exact, approved generic UI labels may be recorded.
+     * Descriptions, hints and all other UI text remain omitted.
      */
     fun tree(
         context: Context,
@@ -541,7 +570,7 @@ object DiagnosticsLogger {
         out.appendLine("${indent} viewId=${safeViewId(viewId)}")
 
         // Never log text, content descriptions, hints or their lengths.
-        out.appendLine("${indent} text=[OMITTED_FOR_PRIVACY]")
+        out.appendLine("${indent} text=${safeUiText(node.text)}")
         out.appendLine("${indent} description=[OMITTED_FOR_PRIVACY]")
         out.appendLine("${indent} hint=[OMITTED_FOR_PRIVACY]")
 
