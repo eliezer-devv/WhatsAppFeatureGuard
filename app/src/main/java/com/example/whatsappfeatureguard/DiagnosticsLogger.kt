@@ -17,8 +17,11 @@ import java.util.concurrent.atomic.AtomicLong
  *
  * Basic Log records concise events and important failures.
  * Full Log additionally captures UI trees and may include UI text.
- * Each recurring event pattern and UI-tree pattern is sampled at most
- * three times per process run, so the log stays useful rather than endless.
+ *
+ * Routine event patterns are limited to three samples per process run.
+ * UI trees are limited to three distinct detection outcomes per category,
+ * shared across event types and window IDs. Repeated identical outcomes
+ * do not consume additional capture slots.
  */
 object DiagnosticsLogger {
 
@@ -40,7 +43,9 @@ object DiagnosticsLogger {
 
     private val sequence = AtomicLong(0)
     private val eventSamples = mutableMapOf<String, Int>()
-    private val treeSamples = mutableMapOf<String, Int>()
+
+    // Each category stores the distinct detection summaries already captured.
+    private val treeSamples = mutableMapOf<String, MutableSet<String>>()
 
     fun routineEnabled(context: Context): Boolean =
         context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
@@ -66,7 +71,7 @@ object DiagnosticsLogger {
 
     /**
      * Writes concise routine events only while logging is enabled.
-     * Each event name/detail pattern is limited to three samples.
+     * Each normalized event name/detail pattern is limited to three samples.
      */
     fun event(
         context: Context,
@@ -76,7 +81,7 @@ object DiagnosticsLogger {
         if (!routineEnabled(context)) return
 
         val signature = eventSignature(name, details)
-        if (!allowSample(eventSamples, signature)) return
+        if (!allowEventSample(signature)) return
 
         write(
             context,
@@ -105,7 +110,7 @@ object DiagnosticsLogger {
         details: String = ""
     ) {
         val signature = eventSignature("FAILURE:$name", details)
-        if (!allowSample(eventSamples, signature)) return
+        if (!allowEventSample(signature)) return
 
         write(
             context,
@@ -163,6 +168,7 @@ object DiagnosticsLogger {
                 appendLine("detailedCapture=${detailedEnabled(context)}")
                 appendLine("includeUiText=${includeTextEnabled(context)}")
                 appendLine("maxSamplesPerPattern=$MAX_SAMPLES_PER_PATTERN")
+                appendLine("maxDistinctTreeOutcomesPerCategory=$MAX_SAMPLES_PER_PATTERN")
                 appendLine("===================================")
             }
         )
@@ -170,7 +176,11 @@ object DiagnosticsLogger {
 
     /**
      * Captures a UI tree only in Full Log mode.
-     * Each event/window/detection pattern is captured at most three times.
+     *
+     * The cap is shared across event types and window IDs. Each category
+     * retains up to three distinct detection summaries. Duplicate summaries
+     * are ignored and do not consume slots.
+     *
      * UI text is redacted unless the user explicitly enabled it.
      */
     fun tree(
@@ -187,17 +197,10 @@ object DiagnosticsLogger {
             return
         }
 
-        val pattern = buildString {
-            append(event?.eventType ?: -1)
-            append('|')
-            append(event?.packageName?.toString().orEmpty())
-            append('|')
-            append(event?.className?.toString().orEmpty())
-            append('|')
-            append(normalizePattern(detectionSummary))
-        }
+        val category = treeCategory(detectionSummary)
+        val outcome = normalizePattern(detectionSummary)
 
-        if (!allowSample(treeSamples, pattern)) return
+        if (!allowTreeSample(category, outcome)) return
 
         val includeText = includeTextEnabled(context)
         val count = intArrayOf(0)
@@ -229,6 +232,8 @@ object DiagnosticsLogger {
         )
         output.appendLine("includeUiText=$includeText")
         output.appendLine("sampleLimit=$MAX_SAMPLES_PER_PATTERN")
+        output.appendLine("treeCategory=$category")
+        output.appendLine("treeOutcome=${clean(outcome)}")
         output.appendLine("detectionSummary=${clean(detectionSummary)}")
 
         try {
@@ -249,16 +254,80 @@ object DiagnosticsLogger {
     }
 
     /**
-     * Atomically grants at most three samples for a pattern.
+     * Groups snapshots by the screen/detection category being investigated.
+     *
+     * A detected viewer or discovery screen gets its own category. Otherwise,
+     * snapshots are grouped by whether the Updates list or Channels heading
+     * bounds were found. The fallback category preserves other states.
+     */
+    private fun treeCategory(summary: String): String {
+        return when {
+            summary.contains(
+                "Status viewer: MATCH",
+                ignoreCase = true
+            ) -> "STATUS_VIEWER"
+
+            summary.contains(
+                "Channels discovery: MATCH",
+                ignoreCase = true
+            ) -> "CHANNELS_DISCOVERY"
+
+            summary.contains(
+                "Channels screen: MATCH",
+                ignoreCase = true
+            ) -> "CHANNELS_SCREEN"
+
+            summary.contains(
+                "Updates list bounds: found",
+                ignoreCase = true
+            ) -> "UPDATES_LIST_FOUND"
+
+            summary.contains(
+                "Channels heading bounds: found",
+                ignoreCase = true
+            ) -> "CHANNELS_HEADING_FOUND"
+
+            summary.contains(
+                "Updates list bounds: not found",
+                ignoreCase = true
+            ) -> "UPDATES_LIST_NOT_FOUND"
+
+            summary.contains(
+                "Channels heading bounds: not found",
+                ignoreCase = true
+            ) -> "CHANNELS_HEADING_NOT_FOUND"
+
+            else -> "OTHER_OR_UNDETECTED"
+        }
+    }
+
+    /**
+     * Allows up to three distinct outcomes per category.
+     * Identical summaries do not consume additional slots.
      */
     @Synchronized
-    private fun allowSample(
-        samples: MutableMap<String, Int>,
-        signature: String
+    private fun allowTreeSample(
+        category: String,
+        outcome: String
     ): Boolean {
-        val count = samples[signature] ?: 0
+        val outcomes = treeSamples.getOrPut(category) { linkedSetOf() }
+
+        if (outcome in outcomes) return false
+        if (outcomes.size >= MAX_SAMPLES_PER_PATTERN) return false
+
+        outcomes.add(outcome)
+        return true
+    }
+
+    /**
+     * Atomically grants at most three samples for a routine event signature.
+     */
+    @Synchronized
+    private fun allowEventSample(signature: String): Boolean {
+        val count = eventSamples[signature] ?: 0
         if (count >= MAX_SAMPLES_PER_PATTERN) return false
-        samples[signature] = count + 1
+
+        eventSamples[signature] = count + 1
         return true
     }
 
