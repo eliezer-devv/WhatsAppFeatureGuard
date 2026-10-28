@@ -265,7 +265,6 @@ class MainActivity : Activity() {
         prefs.edit()
             .putBoolean(DIAGNOSTIC_MODE, true)
             .putBoolean(DiagnosticsLogger.DETAILED_KEY, full)
-            .putBoolean(DiagnosticsLogger.INCLUDE_TEXT_KEY, full)
             .apply()
 
         DiagnosticsLogger.resetCaptureLimits()
@@ -273,7 +272,7 @@ class MainActivity : Activity() {
 
         if (full) {
             toast(
-                "Full Log enabled. UI text may contain private messages, names, and contact information."
+                "Full Log enabled. Only approved generic UI labels are logged."
             )
         } else {
             toast(
@@ -334,8 +333,6 @@ class MainActivity : Activity() {
             prefs.getBoolean(DIAGNOSTIC_MODE, false)
         val detailedEnabled =
             DiagnosticsLogger.detailedEnabled(this)
-        val includeText =
-            DiagnosticsLogger.includeTextEnabled(this)
         val cooldownUntil =
             prefs.getLong(COOLDOWN_UNTIL, 0L)
 
@@ -346,7 +343,7 @@ class MainActivity : Activity() {
 
         val loggingMode = when {
             !diagnosticEnabled -> "OFF"
-            detailedEnabled && includeText -> "FULL"
+            detailedEnabled -> "FULL"
             else -> "BASIC"
         }
 
@@ -411,14 +408,6 @@ class MainActivity : Activity() {
                     if (lockoutEnabled) "ON" else "OFF"
             )
             appendLine("Logging mode: $loggingMode")
-            appendLine(
-                "UI text: " +
-                    if (includeText) {
-                        "INCLUDED — CHECK PRIVACY"
-                    } else {
-                        "NOT INCLUDED"
-                    }
-            )
             appendLine("Cooldown remaining: ${remainingSeconds}s")
         }
 
