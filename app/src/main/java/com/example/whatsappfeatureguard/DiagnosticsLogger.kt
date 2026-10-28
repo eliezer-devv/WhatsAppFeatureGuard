@@ -31,7 +31,6 @@ object DiagnosticsLogger {
 
     const val ROUTINE_KEY = "diagnostic_mode"
     const val DETAILED_KEY = "detailed_capture_mode"
-    const val INCLUDE_TEXT_KEY = "include_ui_text"
 
     private const val LOG_FILE = "whatsapp_accessibility_log.txt"
     private const val PREVIOUS_FILE =
@@ -112,14 +111,6 @@ object DiagnosticsLogger {
     fun detailedEnabled(context: Context): Boolean =
         context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
             .getBoolean(DETAILED_KEY, false)
-
-    /**
-     * Retained for compatibility with existing settings.
-     * UI text is never logged, regardless of this preference.
-     */
-    fun includeTextEnabled(context: Context): Boolean =
-        context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
-            .getBoolean(INCLUDE_TEXT_KEY, false)
 
     @Synchronized
     fun resetCaptureLimits() {
