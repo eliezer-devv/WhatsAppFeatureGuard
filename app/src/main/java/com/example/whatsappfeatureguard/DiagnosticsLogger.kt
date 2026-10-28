@@ -13,15 +13,17 @@ import java.util.Locale
 import java.util.concurrent.atomic.AtomicLong
 
 /**
- * Local-only diagnostic logging.
+ * Privacy-first, local-only diagnostic logging.
  *
- * Basic Log records concise events and important failures.
- * Full Log additionally captures UI trees and may include UI text.
+ * WhatsApp UI text, descriptions, hints, names, messages and notification
+ * contents are NEVER written to the log.
+ *
+ * Detection summaries are rebuilt from a fixed allowlist of technical fields.
+ * Event details are filtered to a small allowlist of technical values.
+ * Exception messages and arbitrary caller-supplied text are never recorded.
  *
  * Routine event patterns are limited to three samples per process run.
- * UI trees are limited to three distinct detection outcomes per category,
- * shared across event types and window IDs. Repeated identical outcomes
- * do not consume additional capture slots.
+ * UI trees are limited to three distinct detection outcomes per category.
  */
 object DiagnosticsLogger {
 
@@ -43,9 +45,35 @@ object DiagnosticsLogger {
 
     private val sequence = AtomicLong(0)
     private val eventSamples = mutableMapOf<String, Int>()
-
-    // Each category stores the distinct detection summaries already captured.
     private val treeSamples = mutableMapOf<String, MutableSet<String>>()
+
+    private val safeDetailKeys = setOf(
+        "retry",
+        "retryCount",
+        "maxRetries",
+        "backPresses",
+        "attempt",
+        "androidAcceptedAction",
+        "homeActionAccepted",
+        "remainingMs",
+        "durationMs",
+        "eventType",
+        "windowId",
+        "contentChangeTypes",
+        "statusViewerDetected",
+        "channelsScreenDetected",
+        "statusBlocking",
+        "channelsBlocking",
+        "blockStatus",
+        "blockChannels",
+        "viewTracked",
+        "removeViewReturned",
+        "screenWidth",
+        "action",
+        "accepted",
+        "exception",
+        "key"
+    )
 
     fun routineEnabled(context: Context): Boolean =
         context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
@@ -55,24 +83,20 @@ object DiagnosticsLogger {
         context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
             .getBoolean(DETAILED_KEY, false)
 
+    /**
+     * Retained for compatibility with existing settings.
+     * UI text is never logged, regardless of this preference.
+     */
     fun includeTextEnabled(context: Context): Boolean =
         context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
             .getBoolean(INCLUDE_TEXT_KEY, false)
 
-    /**
-     * Reset in-memory sample limits when the user changes logging mode
-     * or clears the log. Existing log files are not changed by this method.
-     */
     @Synchronized
     fun resetCaptureLimits() {
         eventSamples.clear()
         treeSamples.clear()
     }
 
-    /**
-     * Writes concise routine events only while logging is enabled.
-     * Each normalized event name/detail pattern is limited to three samples.
-     */
     fun event(
         context: Context,
         name: String,
@@ -80,7 +104,10 @@ object DiagnosticsLogger {
     ) {
         if (!routineEnabled(context)) return
 
-        val signature = eventSignature(name, details)
+        val safeName = safeEventName(name)
+        val safeDetails = safeDetails(name, details)
+        val signature = eventSignature(safeName, safeDetails)
+
         if (!allowEventSample(signature)) return
 
         write(
@@ -90,26 +117,26 @@ object DiagnosticsLogger {
                 appendLine("========== EVENT ==========")
                 appendLine("time=${timestamp()}")
                 appendLine("sequence=${sequence.incrementAndGet()}")
-                appendLine("event=${clean(name)}")
-                if (details.isNotBlank()) {
-                    appendLine(clean(details))
+                appendLine("event=$safeName")
+
+                if (safeDetails.isNotBlank()) {
+                    appendLine("details=$safeDetails")
                 }
+
                 appendLine("===========================")
             }
         )
     }
 
-    /**
-     * Important failures are logged even when routine logging is disabled.
-     * Repeated failures of the same normalized pattern are capped at three.
-     * Do not pass private UI text to this method.
-     */
     fun failure(
         context: Context,
         name: String,
         details: String = ""
     ) {
-        val signature = eventSignature("FAILURE:$name", details)
+        val safeName = safeEventName(name)
+        val safeDetails = safeDetails(name, details)
+        val signature = eventSignature("FAILURE:$safeName", safeDetails)
+
         if (!allowEventSample(signature)) return
 
         write(
@@ -119,17 +146,20 @@ object DiagnosticsLogger {
                 appendLine("======= IMPORTANT FAILURE =======")
                 appendLine("time=${timestamp()}")
                 appendLine("sequence=${sequence.incrementAndGet()}")
-                appendLine("event=${clean(name)}")
-                if (details.isNotBlank()) {
-                    appendLine(clean(details))
+                appendLine("event=$safeName")
+
+                if (safeDetails.isNotBlank()) {
+                    appendLine("details=$safeDetails")
                 }
+
                 appendLine("=================================")
             }
         )
     }
 
     /**
-     * Records app, device, build variant, display and WhatsApp version.
+     * Records technical build information without device identifiers.
+     * No device serial number, account name or WhatsApp UI content is logged.
      */
     fun deviceHeader(
         context: Context,
@@ -137,7 +167,6 @@ object DiagnosticsLogger {
     ) {
         if (!force && !routineEnabled(context)) return
 
-        val metrics = context.resources.displayMetrics
         val whatsappVersion = packageVersion(context, "com.whatsapp")
         val appVersion = packageVersion(context, context.packageName)
 
@@ -152,36 +181,27 @@ object DiagnosticsLogger {
                 appendLine("buildVariant=${BuildConfig.FLAVOR}")
                 appendLine("blockStatus=${BuildConfig.BLOCK_STATUS}")
                 appendLine("blockChannels=${BuildConfig.BLOCK_CHANNELS}")
-                appendLine("manufacturer=${clean(Build.MANUFACTURER)}")
-                appendLine("brand=${clean(Build.BRAND)}")
-                appendLine("model=${clean(Build.MODEL)}")
-                appendLine("device=${clean(Build.DEVICE)}")
-                appendLine("androidRelease=${Build.VERSION.RELEASE}")
+                appendLine("androidRelease=${safeVersion(Build.VERSION.RELEASE)}")
                 appendLine("sdkInt=${Build.VERSION.SDK_INT}")
-                appendLine(
-                    "display=${metrics.widthPixels}x${metrics.heightPixels}"
-                )
-                appendLine("density=${metrics.density}")
-                appendLine("densityDpi=${metrics.densityDpi}")
                 appendLine("whatsappVersion=$whatsappVersion")
                 appendLine("routineLogging=${routineEnabled(context)}")
                 appendLine("detailedCapture=${detailedEnabled(context)}")
-                appendLine("includeUiText=${includeTextEnabled(context)}")
+                appendLine("uiTextLogging=DISABLED_BY_PRIVACY_POLICY")
                 appendLine("maxSamplesPerPattern=$MAX_SAMPLES_PER_PATTERN")
-                appendLine("maxDistinctTreeOutcomesPerCategory=$MAX_SAMPLES_PER_PATTERN")
+                appendLine(
+                    "maxDistinctTreeOutcomesPerCategory=" +
+                        MAX_SAMPLES_PER_PATTERN
+                )
                 appendLine("===================================")
             }
         )
     }
 
     /**
-     * Captures a UI tree only in Full Log mode.
+     * Captures technical accessibility-tree information only.
      *
-     * The cap is shared across event types and window IDs. Each category
-     * retains up to three distinct detection summaries. Duplicate summaries
-     * are ignored and do not consume slots.
-     *
-     * UI text is redacted unless the user explicitly enabled it.
+     * Text, content descriptions and hints are always omitted. This remains
+     * true even when the old include-UI-text preference is enabled.
      */
     fun tree(
         context: Context,
@@ -197,12 +217,12 @@ object DiagnosticsLogger {
             return
         }
 
-        val category = treeCategory(detectionSummary)
-        val outcome = normalizePattern(detectionSummary)
+        val safeSummary = safeDetectionSummary(detectionSummary)
+        val category = treeCategory(safeSummary)
+        val outcome = normalizePattern(safeSummary)
 
         if (!allowTreeSample(category, outcome)) return
 
-        val includeText = includeTextEnabled(context)
         val count = intArrayOf(0)
         val output = StringBuilder()
 
@@ -214,34 +234,33 @@ object DiagnosticsLogger {
             "eventType=${event?.let { eventType(it.eventType) } ?: "RETRY_OR_MANUAL"}"
         )
         output.appendLine(
-            "eventPackage=${clean(event?.packageName?.toString())}"
+            "eventPackageIsWhatsApp=" +
+                (event?.packageName?.toString() == "com.whatsapp")
         )
         output.appendLine(
-            "eventClass=${clean(event?.className?.toString())}"
+            "eventClass=${safeClassName(event?.className?.toString())}"
         )
         output.appendLine("windowId=${event?.windowId ?: -1}")
         output.appendLine(
-            "rootPackage=${clean(root.packageName?.toString())}"
+            "rootPackageIsWhatsApp=" +
+                (root.packageName?.toString() == "com.whatsapp")
         )
         output.appendLine("rootWindowId=${root.windowId}")
         output.appendLine(
             "contentChangeTypes=${event?.contentChangeTypes ?: 0}"
         )
-        output.appendLine(
-            "eventText=${textValue(event?.text?.joinToString(" | "), includeText)}"
-        )
-        output.appendLine("includeUiText=$includeText")
+        output.appendLine("eventText=[OMITTED_FOR_PRIVACY]")
+        output.appendLine("uiTextLogging=DISABLED_BY_PRIVACY_POLICY")
         output.appendLine("sampleLimit=$MAX_SAMPLES_PER_PATTERN")
         output.appendLine("treeCategory=$category")
         output.appendLine("treeOutcome=${clean(outcome)}")
-        output.appendLine("detectionSummary=${clean(detectionSummary)}")
+        output.appendLine("detectionSummary=${clean(safeSummary)}")
 
         try {
-            appendNode(root, output, 0, count, includeText)
+            appendNode(root, output, 0, count)
         } catch (e: Exception) {
             output.appendLine(
-                "TREE_TRAVERSAL_FAILURE=${e.javaClass.simpleName}: " +
-                    clean(e.message)
+                "TREE_TRAVERSAL_FAILURE=${e.javaClass.simpleName}"
             )
         }
 
@@ -254,28 +273,92 @@ object DiagnosticsLogger {
     }
 
     /**
-     * Groups snapshots by the screen/detection category being investigated.
-     *
-     * A detected viewer or discovery screen gets its own category. Otherwise,
-     * snapshots are grouped by whether the Updates list or Channels heading
-     * bounds were found. The fallback category preserves other states.
+     * Rebuilds the detection summary from recognized technical fields only.
+     * Unknown text is discarded rather than copied into the log.
      */
+    private fun safeDetectionSummary(summary: String): String {
+        fun capture(pattern: String): String? {
+            return Regex(pattern, RegexOption.IGNORE_CASE)
+                .find(summary)
+                ?.groupValues
+                ?.getOrNull(1)
+                ?.uppercase(Locale.ROOT)
+        }
+
+        val statusViewer = capture(
+            """Status viewer:\s*(MATCH|no match)"""
+        )?.let {
+            if (it == "MATCH") "MATCH" else "no match"
+        }
+
+        val channelsScreen = capture(
+            """Channels screen:\s*(MATCH|no match)"""
+        )?.let {
+            if (it == "MATCH") "MATCH" else "no match"
+        }
+
+        val channelsDiscovery = capture(
+            """Channels discovery:\s*(MATCH|no match)"""
+        )?.let {
+            if (it == "MATCH") "MATCH" else "no match"
+        }
+
+        val updatesBounds = capture(
+            """Updates list bounds:\s*(found|not found)"""
+        )?.lowercase(Locale.ROOT)
+
+        val channelsBounds = capture(
+            """Channels heading bounds:\s*(found|not found)"""
+        )?.lowercase(Locale.ROOT)
+
+        val statusOverlay = capture(
+            """Status overlay shown:\s*(TRUE|FALSE)"""
+        )?.lowercase(Locale.ROOT)
+
+        val channelsOverlay = capture(
+            """Channels overlay shown:\s*(TRUE|FALSE)"""
+        )?.lowercase(Locale.ROOT)
+
+        val blockingStatus = capture(
+            """blocking enabled:\s*Status=(true|false)"""
+        )?.lowercase(Locale.ROOT)
+
+        val blockingChannels = capture(
+            """Channels=(true|false)"""
+        )?.lowercase(Locale.ROOT)
+
+        return buildList {
+            statusViewer?.let { add("Status viewer: $it") }
+            channelsScreen?.let { add("Channels screen: $it") }
+            channelsDiscovery?.let { add("Channels discovery: $it") }
+            updatesBounds?.let { add("Updates list bounds: $it") }
+            channelsBounds?.let { add("Channels heading bounds: $it") }
+            statusOverlay?.let { add("Status overlay shown: $it") }
+            channelsOverlay?.let { add("Channels overlay shown: $it") }
+
+            if (blockingStatus != null && blockingChannels != null) {
+                add(
+                    "blocking enabled: Status=$blockingStatus, " +
+                        "Channels=$blockingChannels"
+                )
+            }
+        }.joinToString("; ").ifBlank {
+            "No recognized detection fields"
+        }
+    }
+
     private fun treeCategory(summary: String): String {
         return when {
-            summary.contains(
-                "Status viewer: MATCH",
-                ignoreCase = true
-            ) -> "STATUS_VIEWER"
+            summary.contains("Status viewer: MATCH", ignoreCase = true) ->
+                "STATUS_VIEWER"
 
             summary.contains(
                 "Channels discovery: MATCH",
                 ignoreCase = true
             ) -> "CHANNELS_DISCOVERY"
 
-            summary.contains(
-                "Channels screen: MATCH",
-                ignoreCase = true
-            ) -> "CHANNELS_SCREEN"
+            summary.contains("Channels screen: MATCH", ignoreCase = true) ->
+                "CHANNELS_SCREEN"
 
             summary.contains(
                 "Updates list bounds: found",
@@ -301,10 +384,6 @@ object DiagnosticsLogger {
         }
     }
 
-    /**
-     * Allows up to three distinct outcomes per category.
-     * Identical summaries do not consume additional slots.
-     */
     @Synchronized
     private fun allowTreeSample(
         category: String,
@@ -319,9 +398,6 @@ object DiagnosticsLogger {
         return true
     }
 
-    /**
-     * Atomically grants at most three samples for a routine event signature.
-     */
     @Synchronized
     private fun allowEventSample(signature: String): Boolean {
         val count = eventSamples[signature] ?: 0
@@ -331,10 +407,6 @@ object DiagnosticsLogger {
         return true
     }
 
-    /**
-     * Normalize changing numbers so coordinates, counters and timestamps
-     * do not create endless unique patterns.
-     */
     private fun eventSignature(name: String, details: String): String =
         "$name|${normalizePattern(details).take(MAX_FIELD_LENGTH)}"
 
@@ -345,12 +417,99 @@ object DiagnosticsLogger {
             .trim()
             .take(MAX_FIELD_LENGTH)
 
+    /**
+     * Event names in the service are technical constant identifiers.
+     * Arbitrary text is never allowed into the event-name field.
+     */
+    private fun safeEventName(name: String): String {
+        return if (
+            name.length <= 80 &&
+            Regex("^[A-Z0-9_]+$").matches(name)
+        ) {
+            name
+        } else {
+            "UNCLASSIFIED_EVENT"
+        }
+    }
+
+    /**
+     * Keeps only explicitly approved technical key/value fields.
+     * Free-form strings, UI text, reasons, labels and exception messages
+     * are discarded. SCREEN_DETECTION uses its dedicated allowlist parser.
+     */
+    private fun safeDetails(name: String, details: String): String {
+        if (details.isBlank()) return ""
+
+        if (name == "SCREEN_DETECTION") {
+            return safeDetectionSummary(details)
+        }
+
+        val kept = mutableListOf<String>()
+        val pairPattern = Regex("""([A-Za-z][A-Za-z0-9_]*)\s*=\s*([^;,]+)""")
+
+        for (match in pairPattern.findAll(details)) {
+            val key = match.groupValues[1]
+            val rawValue = match.groupValues[2].trim()
+
+            if (key !in safeDetailKeys) continue
+
+            val safeValue = when (key) {
+                "exception" -> {
+                    if (
+                        rawValue.length <= 120 &&
+                        Regex("^[A-Za-z0-9_.$]+$").matches(rawValue)
+                    ) rawValue else null
+                }
+
+                "key" -> {
+                    when (rawValue.lowercase(Locale.ROOT)) {
+                        "status", "channels" ->
+                            rawValue.lowercase(Locale.ROOT)
+                        else -> null
+                    }
+                }
+
+                "action" -> {
+                    when (rawValue.uppercase(Locale.ROOT)) {
+                        "ADD", "UPDATE", "REMOVE" ->
+                            rawValue.uppercase(Locale.ROOT)
+                        else -> null
+                    }
+                }
+
+                "eventType" -> {
+                    if (
+                        rawValue.length <= 40 &&
+                        Regex("^[A-Z0-9_]+$").matches(rawValue)
+                    ) rawValue else null
+                }
+
+                else -> {
+                    if (
+                        Regex("^-?[0-9]+(?:\\.[0-9]+)?$").matches(rawValue) ||
+                        rawValue.equals("true", true) ||
+                        rawValue.equals("false", true)
+                    ) {
+                        rawValue
+                    } else {
+                        null
+                    }
+                }
+            }
+
+            if (safeValue != null) {
+                kept.add("$key=$safeValue")
+            }
+        }
+
+        return kept.distinct().joinToString("; ")
+    }
+
     private fun appendNode(
         node: AccessibilityNodeInfo,
         out: StringBuilder,
         depth: Int,
-        count: IntArray,
-        includeText: Boolean
+        count: IntArray
     ) {
         if (count[0] >= MAX_NODES || depth > MAX_DEPTH) return
 
@@ -369,33 +528,23 @@ object DiagnosticsLogger {
             null
         }
 
-        val hint = if (Build.VERSION.SDK_INT >= 26) {
-            try {
-                node.hintText?.toString()
-            } catch (_: Exception) {
-                null
-            }
-        } else {
-            null
-        }
-
         val indent = "  ".repeat(depth)
 
         out.appendLine("${indent}NODE #${count[0]}")
         out.appendLine(
-            "${indent} class=${clean(node.className?.toString())}"
+            "${indent} class=${safeClassName(node.className?.toString())}"
         )
         out.appendLine(
-            "${indent} package=${clean(node.packageName?.toString())}"
+            "${indent} packageIsWhatsApp=" +
+                (node.packageName?.toString() == "com.whatsapp")
         )
-        out.appendLine("${indent} viewId=${clean(viewId)}")
-        out.appendLine(
-            "${indent} text=${textValue(node.text?.toString(), includeText)}"
-        )
-        out.appendLine(
-            "${indent} description=${textValue(node.contentDescription?.toString(), includeText)}"
-        )
-        out.appendLine("${indent} hint=${textValue(hint, includeText)}")
+        out.appendLine("${indent} viewId=${safeViewId(viewId)}")
+
+        // Never log text, content descriptions, hints or their lengths.
+        out.appendLine("${indent} text=[OMITTED_FOR_PRIVACY]")
+        out.appendLine("${indent} description=[OMITTED_FOR_PRIVACY]")
+        out.appendLine("${indent} hint=[OMITTED_FOR_PRIVACY]")
+
         out.appendLine("${indent} bounds=$bounds")
         out.appendLine("${indent} visibleToUser=${node.isVisibleToUser}")
         out.appendLine("${indent} clickable=${node.isClickable}")
@@ -430,7 +579,7 @@ object DiagnosticsLogger {
             } ?: continue
 
             try {
-                appendNode(child, out, depth + 1, count, includeText)
+                appendNode(child, out, depth + 1, count)
             } catch (e: Exception) {
                 out.appendLine(
                     "${indent} child[$i] traversalError=" +
@@ -443,6 +592,45 @@ object DiagnosticsLogger {
                     // Ignore recycled-node cleanup errors.
                 }
             }
+        }
+    }
+
+    private fun safeClassName(value: String?): String {
+        if (value.isNullOrBlank()) return "(unknown)"
+
+        return if (
+            value.length <= MAX_FIELD_LENGTH &&
+            Regex("^[A-Za-z0-9_.$]+$").matches(value)
+        ) {
+            value
+        } else {
+            "[OMITTED]"
+        }
+    }
+
+    private fun safeViewId(value: String?): String {
+        if (value.isNullOrBlank()) return "(none)"
+
+        return if (
+            value.length <= MAX_FIELD_LENGTH &&
+            Regex("^[A-Za-z0-9_.$:/-]+$").matches(value)
+        ) {
+            value
+        } else {
+            "[OMITTED]"
+        }
+    }
+
+    private fun safeVersion(value: String?): String {
+        if (value.isNullOrBlank()) return "unknown"
+
+        return if (
+            value.length <= 40 &&
+            Regex("^[A-Za-z0-9._-]+$").matches(value)
+        ) {
+            value
+        } else {
+            "unknown"
         }
     }
 
@@ -468,7 +656,7 @@ object DiagnosticsLogger {
                 info.versionCode.toLong()
             }
 
-            "${info.versionName ?: "unknown"} (code=$versionCode)"
+            "${safeVersion(info.versionName)} (code=$versionCode)"
         } catch (e: Exception) {
             "unavailable (${e.javaClass.simpleName})"
         }
@@ -486,7 +674,8 @@ object DiagnosticsLogger {
             val previous = File(context.filesDir, PREVIOUS_FILE)
 
             try {
-                val incomingBytes = content.toByteArray(Charsets.UTF_8).size
+                val incomingBytes =
+                    content.toByteArray(Charsets.UTF_8).size
 
                 if (
                     current.exists() &&
@@ -508,9 +697,12 @@ object DiagnosticsLogger {
                 current.appendText(content + "\n", Charsets.UTF_8)
             } catch (e: Exception) {
                 try {
+                    // Do not include the exception message; it may contain
+                    // arbitrary text from the system.
                     current.appendText(
                         "\nLOG_WRITE_FAILURE " +
-                            "${e.javaClass.simpleName}: ${clean(e.message)}\n"
+                            "${e.javaClass.simpleName}\n",
+                        Charsets.UTF_8
                     )
                 } catch (_: Exception) {
                     // No further recovery is possible if storage is unavailable.
@@ -519,22 +711,13 @@ object DiagnosticsLogger {
         }
     }
 
-    private fun textValue(
-        value: String?,
-        includeText: Boolean
-    ): String {
-        if (value.isNullOrBlank()) return "(empty)"
-        if (!includeText) return "[REDACTED length=${value.length}]"
-        return clean(value)
-    }
-
     private fun clean(value: String?): String {
         if (value == null) return "(null)"
 
         return value
-            .replace("\n", "\\n")
-            .replace("\r", "\\r")
-            .replace("\t", "\\t")
+            .replace("\n", " ")
+            .replace("\r", " ")
+            .replace("\t", " ")
             .take(MAX_FIELD_LENGTH)
     }
 
