@@ -1032,20 +1032,43 @@ class WhatsAppAccessibilityService : AccessibilityService() {
     private fun isChannelsScreen(
     root: AccessibilityNodeInfo
 ): Boolean {
-    // Detect an opened channel conversation/post screen only.
+    // Keep the existing detection conditions unchanged.
     // The discovery page is detected separately below.
+
+    val publicChannelText =
+        containsText(root, "Public channel")
+
+    val conversationContactNameId =
+        containsViewId(root, "conversation_contact_name")
+
+    val newsletterForwardingId = containsViewId(
+        root,
+        "newsletter_quick_forwarding_pill_container_key"
+    )
+
     val openedChannelHeader =
-        containsText(root, "Public channel") &&
-            containsViewId(root, "conversation_contact_name")
+        publicChannelText && conversationContactNameId
 
     val openedChannelPosts =
-        containsViewId(
-            root,
-            "newsletter_quick_forwarding_pill_container_key"
-        ) &&
-            containsViewId(root, "conversation_contact_name")
+        newsletterForwardingId && conversationContactNameId
 
-    return openedChannelHeader || openedChannelPosts
+    val detected =
+        openedChannelHeader || openedChannelPosts
+
+    // Record which parts of the existing detector were found.
+    // Only boolean values are logged, never actual WhatsApp text.
+    DiagnosticsLogger.event(
+        this,
+        "CHANNEL_DETECTION_EVIDENCE",
+        "channelPublicLabel=$publicChannelText; " +
+            "channelContactHeaderId=$conversationContactNameId; " +
+            "channelForwardingId=$newsletterForwardingId; " +
+            "channelHeaderMatch=$openedChannelHeader; " +
+            "channelPostsMatch=$openedChannelPosts; " +
+            "channelsScreenDetected=$detected"
+    )
+
+    return detected
 }
 
 private fun isChannelsDiscoveryScreen(
