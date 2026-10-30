@@ -38,8 +38,8 @@ object DiagnosticsLogger {
 
     private const val MAX_LOG_BYTES = 2 * 1024 * 1024L
     private const val MAX_SAMPLES_PER_PATTERN = 3
-    private const val MAX_NODES = 500
-    private const val MAX_DEPTH = 30
+    private const val MAX_NODES = 120
+    private const val MAX_DEPTH = 18
     private const val MAX_FIELD_LENGTH = 240
 
     private val sequence = AtomicLong(0)
@@ -71,7 +71,12 @@ object DiagnosticsLogger {
         "action",
         "accepted",
         "exception",
-        "key"
+        "key",
+        "channelPublicLabel",
+"channelContactHeaderId",
+"channelForwardingId",
+"channelHeaderMatch",
+"channelPostsMatch"
     )
 
     /**
@@ -127,9 +132,9 @@ object DiagnosticsLogger {
 
         val safeName = safeEventName(name)
         val safeDetails = safeDetails(name, details)
-        val signature = eventSignature(safeName, safeDetails)
-
-        if (!allowEventSample(signature)) return
+        // Limit each event name to three samples.
+// Changing window IDs or details cannot create unlimited samples.
+if (!allowEventSample(safeName)) return
 
         write(
             context,
@@ -156,9 +161,7 @@ object DiagnosticsLogger {
     ) {
         val safeName = safeEventName(name)
         val safeDetails = safeDetails(name, details)
-        val signature = eventSignature("FAILURE:$safeName", safeDetails)
-
-        if (!allowEventSample(signature)) return
+        if (!allowEventSample("FAILURE:$safeName")) return
 
         write(
             context,
@@ -203,8 +206,34 @@ object DiagnosticsLogger {
                 appendLine("blockStatus=${BuildConfig.BLOCK_STATUS}")
                 appendLine("blockChannels=${BuildConfig.BLOCK_CHANNELS}")
                 appendLine("androidRelease=${safeVersion(Build.VERSION.RELEASE)}")
-                appendLine("sdkInt=${Build.VERSION.SDK_INT}")
-                appendLine("whatsappVersion=$whatsappVersion")
+appendLine("sdkInt=${Build.VERSION.SDK_INT}")
+
+appendLine("manufacturer=${safeBuildValue(Build.MANUFACTURER)}")
+appendLine("model=${safeBuildValue(Build.MODEL)}")
+appendLine("device=${safeBuildValue(Build.DEVICE)}")
+appendLine("product=${safeBuildValue(Build.PRODUCT)}")
+appendLine("buildId=${safeBuildValue(Build.ID)}")
+
+appendLine(
+    "securityPatch=" +
+        safeBuildValue(
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+                Build.VERSION.SECURITY_PATCH
+            } else {
+                "unavailable"
+            }
+        )
+)
+
+val metrics = context.resources.displayMetrics
+appendLine("screenWidthPx=${metrics.widthPixels}")
+appendLine("screenHeightPx=${metrics.heightPixels}")
+appendLine("screenDensityDpi=${metrics.densityDpi}")
+appendLine(
+    "screenDensity=${"%.2f".format(Locale.US, metrics.density)}"
+)
+
+appendLine("whatsappVersion=$whatsappVersion")
                 appendLine("routineLogging=${routineEnabled(context)}")
                 appendLine("detailedCapture=${detailedEnabled(context)}")
                 appendLine("uiTextLogging=APPROVED_LABELS_ONLY")
@@ -653,7 +682,19 @@ object DiagnosticsLogger {
             "unknown"
         }
     }
+    
+private fun safeBuildValue(value: String?): String {
+    if (value.isNullOrBlank()) return "unknown"
 
+    return if (
+        value.length <= 80 &&
+        Regex("^[A-Za-z0-9 ._:/-]+$").matches(value)
+    ) {
+        value
+    } else {
+        "unknown"
+    }
+}
     private fun packageVersion(
         context: Context,
         packageName: String
